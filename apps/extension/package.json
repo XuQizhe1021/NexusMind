@@ -1,0 +1,13 @@
+{
+  "name": "@nexusmind/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs"
+  },
+  "dependencies": {
+    "@nexusmind/ai": "0.1.0",
+    "@nexusmind/core": "0.1.0"
+  }
+}

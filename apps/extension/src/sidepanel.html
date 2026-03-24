@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NexusMind</title>
+    <link rel="stylesheet" href="./sidepanel.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>NexusMind</h1>
+      </header>
+
+      <section class="panel">
+        <h2>当前页 AI 问答</h2>
+        <textarea id="questionInput" placeholder="请输入你想问的问题"></textarea>
+        <button id="askBtn">提问</button>
+        <pre id="answerOutput"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>基础设置</h2>
+        <label>Provider
+          <select id="providerInput">
+            <option value="openai">OpenAI</option>
+            <option value="claude">Claude</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </label>
+        <label>Model
+          <input id="modelInput" value="gpt-4o-mini" />
+        </label>
+        <label>API Key
+          <input id="apiKeyInput" type="password" />
+        </label>
+        <label>隐私模式
+          <select id="privacyModeInput">
+            <option value="strict">strict</option>
+            <option value="balanced">balanced</option>
+          </select>
+        </label>
+        <label>每日额度
+          <input id="dailyLimitInput" type="number" value="200" />
+        </label>
+        <label>每月额度
+          <input id="monthlyLimitInput" type="number" value="5000" />
+        </label>
+        <button id="saveBtn">保存设置</button>
+        <p id="saveStatus"></p>
+      </section>
+    </main>
+    <script type="module" src="./sidepanel.js"></script>
+  </body>
+</html>
