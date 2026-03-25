@@ -1,9 +1,11 @@
 import { OpenAiChatClient } from "@nexusmind/ai/provider";
 import { decryptApiKey, encryptApiKey, parseSettings, saveSettingsPayloadSchema } from "@nexusmind/core";
 import type { NexusMindSettings } from "@nexusmind/core";
+import { NexusMindGraphService } from "@nexusmind/graph";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const SETTINGS_KEY = "nexusmind_settings";
+const graphService = new NexusMindGraphService();
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.contextMenus.create({
@@ -82,6 +84,17 @@ async function askCurrentPage(
   });
 }
 
+async function indexPage(
+  message: Extract<BackgroundMessage, { type: "NEXUSMIND_INDEX_PAGE" }>
+): Promise<{ pageId: string; entityCount: number; relationCount: number }> {
+  // 图谱索引仅在用户明确点击“收录当前页”时触发，遵循用户触发原则。
+  return graphService.ingestPage({
+    url: message.payload.url,
+    title: message.payload.title,
+    pageText: message.payload.pageText.slice(0, 40000)
+  });
+}
+
 chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendResponse) => {
   // MV3 service worker 里必须用异步桥接返回值，否则调用方会提前超时。
   const run = async (): Promise<BackgroundResponse> => {
@@ -97,6 +110,22 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
       if (message.type === "NEXUSMIND_ASK") {
         const answer = await askCurrentPage(message);
         return { ok: true, data: { answer } };
+      }
+      if (message.type === "NEXUSMIND_INDEX_PAGE") {
+        const indexed = await indexPage(message);
+        return { ok: true, data: indexed };
+      }
+      if (message.type === "NEXUSMIND_GRAPH_SEARCH") {
+        const result = await graphService.search(message.payload.query);
+        return { ok: true, data: result };
+      }
+      if (message.type === "NEXUSMIND_GRAPH_STATS") {
+        const stats = await graphService.getStats();
+        return { ok: true, data: stats };
+      }
+      if (message.type === "NEXUSMIND_GRAPH_CLEAR") {
+        await graphService.clearAll();
+        return { ok: true, data: { cleared: true } };
       }
       return { ok: false, error: "不支持的消息类型" };
     } catch (error) {

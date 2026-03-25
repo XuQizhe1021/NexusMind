@@ -11,6 +11,8 @@ export default defineConfig({
     alias: {
       "@nexusmind/core": resolve(__dirname, "packages/core/src/index.ts"),
       "@nexusmind/core/*": resolve(__dirname, "packages/core/src/*"),
+      "@nexusmind/graph": resolve(__dirname, "packages/graph/src/index.ts"),
+      "@nexusmind/graph/*": resolve(__dirname, "packages/graph/src/*"),
       "@nexusmind/billing": resolve(__dirname, "packages/billing/src/index.ts"),
       "@nexusmind/billing/*": resolve(__dirname, "packages/billing/src/*")
     }

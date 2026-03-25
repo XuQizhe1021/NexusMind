@@ -19,6 +19,26 @@ export type BackgroundMessage =
     }
   | {
       type: "NEXUSMIND_GET_SETTINGS";
+    }
+  | {
+      type: "NEXUSMIND_INDEX_PAGE";
+      payload: {
+        url: string;
+        title: string;
+        pageText: string;
+      };
+    }
+  | {
+      type: "NEXUSMIND_GRAPH_SEARCH";
+      payload: {
+        query: string;
+      };
+    }
+  | {
+      type: "NEXUSMIND_GRAPH_STATS";
+    }
+  | {
+      type: "NEXUSMIND_GRAPH_CLEAR";
     };
 
 export type BackgroundResponse =

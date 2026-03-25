@@ -18,6 +18,7 @@
     "@types/chrome": "^0.0.314",
     "@types/node": "^22.15.28",
     "esbuild": "^0.25.4",
+    "fake-indexeddb": "^6.2.4",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4",
     "zod": "^3.25.7"

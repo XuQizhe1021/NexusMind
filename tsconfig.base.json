@@ -18,17 +18,32 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
+      "@nexusmind/core": [
+        "packages/core/src/index.ts"
+      ],
       "@nexusmind/core/*": [
         "packages/core/src/*"
+      ],
+      "@nexusmind/ai": [
+        "packages/ai/src/index.ts"
       ],
       "@nexusmind/ai/*": [
         "packages/ai/src/*"
       ],
+      "@nexusmind/graph": [
+        "packages/graph/src/index.ts"
+      ],
       "@nexusmind/graph/*": [
         "packages/graph/src/*"
       ],
+      "@nexusmind/billing": [
+        "packages/billing/src/index.ts"
+      ],
       "@nexusmind/billing/*": [
         "packages/billing/src/*"
+      ],
+      "@nexusmind/ui": [
+        "packages/ui/src/index.ts"
       ],
       "@nexusmind/ui/*": [
         "packages/ui/src/*"

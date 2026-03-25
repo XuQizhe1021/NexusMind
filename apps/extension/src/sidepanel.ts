@@ -1,4 +1,5 @@
 import type { NexusMindSettings } from "@nexusmind/core";
+import type { GraphSearchResult } from "@nexusmind/graph";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const questionInput = document.querySelector<HTMLTextAreaElement>("#questionInput");
@@ -13,6 +14,14 @@ const dailyLimitInput = document.querySelector<HTMLInputElement>("#dailyLimitInp
 const monthlyLimitInput = document.querySelector<HTMLInputElement>("#monthlyLimitInput");
 const saveBtn = document.querySelector<HTMLButtonElement>("#saveBtn");
 const saveStatus = document.querySelector<HTMLElement>("#saveStatus");
+const indexGraphBtn = document.querySelector<HTMLButtonElement>("#indexGraphBtn");
+const refreshGraphBtn = document.querySelector<HTMLButtonElement>("#refreshGraphBtn");
+const graphStatus = document.querySelector<HTMLElement>("#graphStatus");
+const graphStats = document.querySelector<HTMLElement>("#graphStats");
+const graphSearchInput = document.querySelector<HTMLInputElement>("#graphSearchInput");
+const graphSearchBtn = document.querySelector<HTMLButtonElement>("#graphSearchBtn");
+const graphResultOutput = document.querySelector<HTMLElement>("#graphResultOutput");
+const graphCanvas = document.querySelector<HTMLElement>("#graphCanvas");
 
 function ensureElement<T>(element: T | null, name: string): T {
   if (!element) {
@@ -43,6 +52,19 @@ async function getCurrentPageText(): Promise<string> {
   return response.data.pageText;
 }
 
+async function getCurrentTabContext(): Promise<{ url: string; title: string; pageText: string }> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url) {
+    throw new Error("无法定位当前标签页");
+  }
+  const pageText = await getCurrentPageText();
+  return {
+    url: tab.url,
+    title: tab.title ?? tab.url,
+    pageText
+  };
+}
+
 async function onAsk(): Promise<void> {
   const question = ensureElement(questionInput, "questionInput").value.trim();
   if (!question) {
@@ -56,6 +78,67 @@ async function onAsk(): Promise<void> {
     payload: { question, pageText }
   });
   ensureElement(answerOutput, "answerOutput").textContent = data.answer;
+}
+
+function renderGraph(result: GraphSearchResult): void {
+  const canvas = ensureElement(graphCanvas, "graphCanvas");
+  canvas.innerHTML = "";
+  const matches = new Set(
+    result.nodes
+      .filter((node) => node.canonicalKey.includes(result.query.trim().toLowerCase()))
+      .map((node) => node.id)
+  );
+  for (const node of result.nodes.slice(0, 40)) {
+    const tag = document.createElement("span");
+    tag.className = matches.has(node.id) ? "graph-node is-match" : "graph-node";
+    tag.textContent = node.label;
+    canvas.append(tag);
+  }
+}
+
+function renderBacktrace(result: GraphSearchResult): void {
+  const nodeById = new Map(result.nodes.map((node) => [node.id, node.label]));
+  const lines = result.edges.slice(0, 40).map((edge) => {
+    const source = nodeById.get(edge.sourceEntityId) ?? edge.sourceEntityId;
+    const target = nodeById.get(edge.targetEntityId) ?? edge.targetEntityId;
+    return `${source} --${edge.relationType}(${edge.weight})--> ${target}`;
+  });
+  ensureElement(graphResultOutput, "graphResultOutput").textContent =
+    lines.length > 0 ? lines.join("\n") : "未找到可回溯关系";
+}
+
+async function refreshGraphStats(): Promise<void> {
+  const stats = await sendToBackground<{ entities: number; relations: number; pages: number }>({
+    type: "NEXUSMIND_GRAPH_STATS"
+  });
+  ensureElement(graphStats, "graphStats").textContent =
+    `实体 ${stats.entities} / 关系 ${stats.relations} / 页面 ${stats.pages}`;
+}
+
+async function onIndexCurrentPage(): Promise<void> {
+  ensureElement(graphStatus, "graphStatus").textContent = "正在收录当前页...";
+  const context = await getCurrentTabContext();
+  const indexed = await sendToBackground<{ pageId: string; entityCount: number; relationCount: number }>({
+    type: "NEXUSMIND_INDEX_PAGE",
+    payload: context
+  });
+  ensureElement(graphStatus, "graphStatus").textContent =
+    `收录成功：实体 ${indexed.entityCount}，关系 ${indexed.relationCount}`;
+  await refreshGraphStats();
+}
+
+async function onGraphSearch(): Promise<void> {
+  const query = ensureElement(graphSearchInput, "graphSearchInput").value.trim();
+  if (!query) {
+    throw new Error("请输入图谱检索关键词");
+  }
+  // 搜索时同时返回一跳邻接关系，保证用户可以直接回看“实体如何被关联”。
+  const result = await sendToBackground<GraphSearchResult>({
+    type: "NEXUSMIND_GRAPH_SEARCH",
+    payload: { query }
+  });
+  renderGraph(result);
+  renderBacktrace(result);
 }
 
 function parseIntInput(input: HTMLInputElement, fallback: number): number {
@@ -115,4 +198,26 @@ ensureElement(saveBtn, "saveBtn").addEventListener("click", () => {
   });
 });
 
+ensureElement(indexGraphBtn, "indexGraphBtn").addEventListener("click", () => {
+  onIndexCurrentPage().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "收录失败";
+    ensureElement(graphStatus, "graphStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(refreshGraphBtn, "refreshGraphBtn").addEventListener("click", () => {
+  refreshGraphStats().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "统计刷新失败";
+    ensureElement(graphStatus, "graphStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(graphSearchBtn, "graphSearchBtn").addEventListener("click", () => {
+  onGraphSearch().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "图谱搜索失败";
+    ensureElement(graphResultOutput, "graphResultOutput").textContent = `错误：${message}`;
+  });
+});
+
 loadSettings().catch(() => undefined);
+refreshGraphStats().catch(() => undefined);

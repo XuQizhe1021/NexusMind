@@ -57,6 +57,49 @@ button {
   border: none;
 }
 
+.secondary-btn {
+  background: #475569;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#graphStatus,
+#graphStats {
+  margin: 4px 0;
+  font-size: 12px;
+  color: #334155;
+}
+
+.graph-canvas {
+  margin-top: 8px;
+  border: 1px dashed #94a3b8;
+  border-radius: 6px;
+  min-height: 140px;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  background: #f8fafc;
+}
+
+.graph-node {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid #bfdbfe;
+  background: #dbeafe;
+}
+
+.graph-node.is-match {
+  border-color: #f59e0b;
+  background: #fef3c7;
+}
+
 pre {
   white-space: pre-wrap;
   line-height: 1.4;

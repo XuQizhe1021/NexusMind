@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@nexusmind/ai": "0.1.0",
-    "@nexusmind/core": "0.1.0"
+    "@nexusmind/core": "0.1.0",
+    "@nexusmind/graph": "0.1.0"
   }
 }

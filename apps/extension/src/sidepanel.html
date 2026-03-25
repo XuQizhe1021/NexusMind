@@ -20,6 +20,22 @@
       </section>
 
       <section class="panel">
+        <h2>知识织网（Phase 2）</h2>
+        <div class="row">
+          <button id="indexGraphBtn">收录当前页</button>
+          <button id="refreshGraphBtn" class="secondary-btn">刷新图谱统计</button>
+        </div>
+        <p id="graphStatus"></p>
+        <p id="graphStats"></p>
+        <label>图谱搜索
+          <input id="graphSearchInput" placeholder="输入实体关键词，例如 OpenAI" />
+        </label>
+        <button id="graphSearchBtn">搜索并回溯</button>
+        <div id="graphCanvas" class="graph-canvas"></div>
+        <pre id="graphResultOutput"></pre>
+      </section>
+
+      <section class="panel">
         <h2>基础设置</h2>
         <label>Provider
           <select id="providerInput">
