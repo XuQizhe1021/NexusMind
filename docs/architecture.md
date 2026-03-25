@@ -4,8 +4,8 @@
 
 - `apps/extension`
   - `background`：统一处理 AI 请求、图谱写入检索、设置存储、扩展命令与右键菜单
-  - `content`：提取当前页面可读文本，作为问答上下文输入
-  - `sidepanel`：用户交互入口（问答 + 图谱 + 设置）
+  - `content`：提取当前页面可读文本，执行页面重写、回滚与 SPA 路由隔离
+  - `sidepanel`：用户交互入口（问答 + 图谱 + 页面重写 + 设置）
 - `packages/core`
   - 领域类型定义
   - 对外配置 Schema 校验
@@ -33,15 +33,27 @@
 9. background 调用 `@nexusmind/graph` 执行抽取、归一与写入
 10. sidepanel 通过 `NEXUSMIND_GRAPH_STATS / NEXUSMIND_GRAPH_SEARCH` 展示图谱统计与回溯
 
+11. 用户在侧边栏选择页面重写意图并点击“应用页面重写”
+12. sidepanel 读取当前意图并调用 content script 的 `NEXUSMIND_REWRITE_APPLY`
+13. content 执行 DOM 重排，记录可逆变更集（隐藏/样式/移动/插入）
+14. 用户点击“一键还原”或 SPA 路由切换时，content 触发回滚并恢复页面
+
 ## 3. 分层边界
 
 - UI 层不直接调用第三方 AI API
 - UI 层不直接访问 IndexedDB，统一通过 background 消息桥接
 - AI Provider 不感知浏览器 UI
 - 配置结构统一通过 Schema 校验与默认值兜底
+- 页面重写能力仅在 content 层操作 DOM，sidepanel 不直接触碰页面结构
 
-## 4. 后续扩展路径
+## 4. Phase 3 新增能力
 
-- Phase 3：增加页面重写策略与 DOM 回滚机制
+- 页面重写意图：`learning / summary / distraction_free`
+- 站点默认意图：`rewrite.defaultIntent + rewrite.siteIntents`
+- DOM 可逆重排：支持“应用重写 / 手动还原 / 路由切换自动回滚”
+- 重写重入控制：同路由同意图幂等、并发重写忙碌保护
+
+## 5. 后续扩展路径
+
 - Phase 4：引入流式问答与答案高亮联动
 - Phase 5：接入订阅鉴权、调用计数、超额购买入口

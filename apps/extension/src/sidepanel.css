@@ -68,7 +68,9 @@ button {
 }
 
 #graphStatus,
-#graphStats {
+#graphStats,
+#rewriteStatus,
+#siteIntentStatus {
   margin: 4px 0;
   font-size: 12px;
   color: #334155;

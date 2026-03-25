@@ -36,6 +36,22 @@
       </section>
 
       <section class="panel">
+        <h2>页面重写（Phase 3）</h2>
+        <label>当前重写意图
+          <select id="rewriteIntentInput">
+            <option value="learning">学习模式</option>
+            <option value="summary">摘要模式</option>
+            <option value="distraction_free">去干扰模式</option>
+          </select>
+        </label>
+        <div class="row">
+          <button id="rewriteApplyBtn">应用页面重写</button>
+          <button id="rewriteRollbackBtn" class="secondary-btn">一键还原</button>
+        </div>
+        <p id="rewriteStatus"></p>
+      </section>
+
+      <section class="panel">
         <h2>基础设置</h2>
         <label>Provider
           <select id="providerInput">
@@ -62,6 +78,18 @@
         <label>每月额度
           <input id="monthlyLimitInput" type="number" value="5000" />
         </label>
+        <label>全局默认重写意图
+          <select id="defaultIntentInput">
+            <option value="learning">学习模式</option>
+            <option value="summary">摘要模式</option>
+            <option value="distraction_free">去干扰模式</option>
+          </select>
+        </label>
+        <div class="row">
+          <button id="saveSiteIntentBtn" class="secondary-btn">设为当前站点默认意图</button>
+          <button id="clearSiteIntentBtn" class="secondary-btn">清除当前站点默认意图</button>
+        </div>
+        <p id="siteIntentStatus"></p>
         <button id="saveBtn">保存设置</button>
         <p id="saveStatus"></p>
       </section>

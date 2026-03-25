@@ -49,6 +49,7 @@ async function saveSettings(message: Extract<BackgroundMessage, { type: "NEXUSMI
       dailyLimit: payload.dailyLimit,
       monthlyLimit: payload.monthlyLimit
     },
+    rewrite: payload.rewrite,
     encryptedApiKey: encrypted.encryptedApiKey,
     apiKeyIv: encrypted.iv,
     apiKeySalt: encrypted.salt

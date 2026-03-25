@@ -2,7 +2,7 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "rootDir": ".",
+    "rootDir": "..",
     "outDir": "../dist-tests",
     "types": [
       "node",
@@ -10,7 +10,8 @@
     ]
   },
   "include": [
-    "**/*.ts"
+    "**/*.ts",
+    "../apps/extension/src/rewrite-engine.ts"
   ],
   "references": [
     {

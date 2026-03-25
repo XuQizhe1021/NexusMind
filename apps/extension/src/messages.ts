@@ -1,3 +1,5 @@
+import type { RewriteConfig, RewriteIntent } from "@nexusmind/core";
+
 export type BackgroundMessage =
   | {
       type: "NEXUSMIND_ASK";
@@ -15,6 +17,7 @@ export type BackgroundMessage =
         privacyMode: "strict" | "balanced";
         dailyLimit: number;
         monthlyLimit: number;
+        rewrite: RewriteConfig;
       };
     }
   | {
@@ -39,6 +42,18 @@ export type BackgroundMessage =
     }
   | {
       type: "NEXUSMIND_GRAPH_CLEAR";
+    }
+  | {
+      type: "NEXUSMIND_REWRITE_APPLY";
+      payload: {
+        intent: RewriteIntent;
+      };
+    }
+  | {
+      type: "NEXUSMIND_REWRITE_ROLLBACK";
+    }
+  | {
+      type: "NEXUSMIND_REWRITE_STATUS";
     };
 
 export type BackgroundResponse =

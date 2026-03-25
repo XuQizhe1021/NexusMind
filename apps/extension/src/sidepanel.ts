@@ -1,4 +1,5 @@
-import type { NexusMindSettings } from "@nexusmind/core";
+import { normalizeHostname, resolveRewriteIntent, upsertSiteIntentRule } from "@nexusmind/core";
+import type { NexusMindSettings, RewriteIntent } from "@nexusmind/core";
 import type { GraphSearchResult } from "@nexusmind/graph";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
@@ -22,6 +23,22 @@ const graphSearchInput = document.querySelector<HTMLInputElement>("#graphSearchI
 const graphSearchBtn = document.querySelector<HTMLButtonElement>("#graphSearchBtn");
 const graphResultOutput = document.querySelector<HTMLElement>("#graphResultOutput");
 const graphCanvas = document.querySelector<HTMLElement>("#graphCanvas");
+const rewriteIntentInput = document.querySelector<HTMLSelectElement>("#rewriteIntentInput");
+const rewriteApplyBtn = document.querySelector<HTMLButtonElement>("#rewriteApplyBtn");
+const rewriteRollbackBtn = document.querySelector<HTMLButtonElement>("#rewriteRollbackBtn");
+const rewriteStatus = document.querySelector<HTMLElement>("#rewriteStatus");
+const defaultIntentInput = document.querySelector<HTMLSelectElement>("#defaultIntentInput");
+const saveSiteIntentBtn = document.querySelector<HTMLButtonElement>("#saveSiteIntentBtn");
+const clearSiteIntentBtn = document.querySelector<HTMLButtonElement>("#clearSiteIntentBtn");
+const siteIntentStatus = document.querySelector<HTMLElement>("#siteIntentStatus");
+
+const INTENT_LABELS: Record<RewriteIntent, string> = {
+  learning: "学习模式",
+  summary: "摘要模式",
+  distraction_free: "去干扰模式"
+};
+
+let currentSettings: NexusMindSettings | null = null;
 
 function ensureElement<T>(element: T | null, name: string): T {
   if (!element) {
@@ -32,6 +49,18 @@ function ensureElement<T>(element: T | null, name: string): T {
 
 async function sendToBackground<T>(message: BackgroundMessage): Promise<T> {
   const response = (await chrome.runtime.sendMessage(message)) as BackgroundResponse;
+  if (!response.ok) {
+    throw new Error(response.error);
+  }
+  return response.data as T;
+}
+
+async function sendToCurrentTab<T>(message: { type: string; payload?: unknown }): Promise<T> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    throw new Error("无法定位当前页面");
+  }
+  const response = (await chrome.tabs.sendMessage(tab.id, message)) as BackgroundResponse;
   if (!response.ok) {
     throw new Error(response.error);
   }
@@ -63,6 +92,14 @@ async function getCurrentTabContext(): Promise<{ url: string; title: string; pag
     title: tab.title ?? tab.url,
     pageText
   };
+}
+
+async function getCurrentTabUrl(): Promise<string> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url) {
+    throw new Error("无法获取当前站点");
+  }
+  return tab.url;
 }
 
 async function onAsk(): Promise<void> {
@@ -158,6 +195,9 @@ async function onSaveSettings(): Promise<void> {
   if (!apiKey) {
     throw new Error("API Key 不能为空");
   }
+  if (!currentSettings) {
+    throw new Error("设置尚未加载完成");
+  }
 
   await sendToBackground({
     type: "NEXUSMIND_SAVE_SETTINGS",
@@ -167,21 +207,92 @@ async function onSaveSettings(): Promise<void> {
       apiKey,
       privacyMode,
       dailyLimit: parseIntInput(ensureElement(dailyLimitInput, "dailyLimitInput"), 200),
-      monthlyLimit: parseIntInput(ensureElement(monthlyLimitInput, "monthlyLimitInput"), 5000)
+      monthlyLimit: parseIntInput(ensureElement(monthlyLimitInput, "monthlyLimitInput"), 5000),
+      rewrite: {
+        defaultIntent: ensureElement(defaultIntentInput, "defaultIntentInput").value as RewriteIntent,
+        siteIntents: currentSettings.rewrite.siteIntents
+      }
     }
   });
   ensureElement(saveStatus, "saveStatus").textContent = "设置已保存";
+}
+
+async function onApplyRewrite(): Promise<void> {
+  const intent = ensureElement(rewriteIntentInput, "rewriteIntentInput").value as RewriteIntent;
+  ensureElement(rewriteStatus, "rewriteStatus").textContent = `正在应用${INTENT_LABELS[intent]}...`;
+  const data = await sendToCurrentTab<{ applied: boolean; intent: RewriteIntent; durationMs: number }>({
+    type: "NEXUSMIND_REWRITE_APPLY",
+    payload: {
+      intent
+    }
+  });
+  ensureElement(rewriteStatus, "rewriteStatus").textContent =
+    `已应用${INTENT_LABELS[data.intent]}，耗时 ${data.durationMs.toFixed(1)}ms`;
+}
+
+async function onRollbackRewrite(): Promise<void> {
+  const data = await sendToCurrentTab<{ restored: boolean; reason?: string }>({
+    type: "NEXUSMIND_REWRITE_ROLLBACK"
+  });
+  ensureElement(rewriteStatus, "rewriteStatus").textContent = data.restored
+    ? "页面已还原"
+    : `未执行还原：${data.reason ?? "当前未处于重写状态"}`;
+}
+
+async function onSaveSiteIntent(): Promise<void> {
+  if (!currentSettings) {
+    throw new Error("设置尚未加载完成");
+  }
+  const url = await getCurrentTabUrl();
+  const hostname = normalizeHostname(url);
+  if (!hostname) {
+    throw new Error("当前站点域名无效");
+  }
+  const intent = ensureElement(rewriteIntentInput, "rewriteIntentInput").value as RewriteIntent;
+  currentSettings = {
+    ...currentSettings,
+    rewrite: {
+      ...currentSettings.rewrite,
+      siteIntents: upsertSiteIntentRule(currentSettings.rewrite.siteIntents, hostname, intent)
+    }
+  };
+  ensureElement(siteIntentStatus, "siteIntentStatus").textContent =
+    `${hostname} 已设为${INTENT_LABELS[intent]}，点击“保存设置”后生效`;
+}
+
+async function onClearSiteIntent(): Promise<void> {
+  if (!currentSettings) {
+    throw new Error("设置尚未加载完成");
+  }
+  const url = await getCurrentTabUrl();
+  const hostname = normalizeHostname(url);
+  if (!hostname) {
+    throw new Error("当前站点域名无效");
+  }
+  currentSettings = {
+    ...currentSettings,
+    rewrite: {
+      ...currentSettings.rewrite,
+      siteIntents: currentSettings.rewrite.siteIntents.filter((rule) => rule.hostname !== hostname)
+    }
+  };
+  ensureElement(siteIntentStatus, "siteIntentStatus").textContent =
+    `${hostname} 的站点默认意图已清除，点击“保存设置”后生效`;
 }
 
 async function loadSettings(): Promise<void> {
   const settings = await sendToBackground<NexusMindSettings>({
     type: "NEXUSMIND_GET_SETTINGS"
   });
+  currentSettings = settings;
   ensureElement(providerInput, "providerInput").value = settings.provider;
   ensureElement(modelInput, "modelInput").value = settings.model;
   ensureElement(privacyModeInput, "privacyModeInput").value = settings.privacyMode;
   ensureElement(dailyLimitInput, "dailyLimitInput").value = String(settings.costControl.dailyLimit);
   ensureElement(monthlyLimitInput, "monthlyLimitInput").value = String(settings.costControl.monthlyLimit);
+  ensureElement(defaultIntentInput, "defaultIntentInput").value = settings.rewrite.defaultIntent;
+  const url = await getCurrentTabUrl();
+  ensureElement(rewriteIntentInput, "rewriteIntentInput").value = resolveRewriteIntent(settings, url);
 }
 
 ensureElement(askBtn, "askBtn").addEventListener("click", () => {
@@ -216,6 +327,34 @@ ensureElement(graphSearchBtn, "graphSearchBtn").addEventListener("click", () => 
   onGraphSearch().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "图谱搜索失败";
     ensureElement(graphResultOutput, "graphResultOutput").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(rewriteApplyBtn, "rewriteApplyBtn").addEventListener("click", () => {
+  onApplyRewrite().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "页面重写失败";
+    ensureElement(rewriteStatus, "rewriteStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(rewriteRollbackBtn, "rewriteRollbackBtn").addEventListener("click", () => {
+  onRollbackRewrite().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "页面还原失败";
+    ensureElement(rewriteStatus, "rewriteStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(saveSiteIntentBtn, "saveSiteIntentBtn").addEventListener("click", () => {
+  onSaveSiteIntent().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "站点意图保存失败";
+    ensureElement(siteIntentStatus, "siteIntentStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(clearSiteIntentBtn, "clearSiteIntentBtn").addEventListener("click", () => {
+  onClearSiteIntent().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "站点意图清除失败";
+    ensureElement(siteIntentStatus, "siteIntentStatus").textContent = `错误：${message}`;
   });
 });
 

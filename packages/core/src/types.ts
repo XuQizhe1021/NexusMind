@@ -5,6 +5,18 @@ export interface CostControlConfig {
   monthlyLimit: number;
 }
 
+export type RewriteIntent = "learning" | "summary" | "distraction_free";
+
+export interface SiteIntentRule {
+  hostname: string;
+  intent: RewriteIntent;
+}
+
+export interface RewriteConfig {
+  defaultIntent: RewriteIntent;
+  siteIntents: SiteIntentRule[];
+}
+
 export interface NexusMindSettings {
   provider: AiProvider;
   model: string;
@@ -13,6 +25,7 @@ export interface NexusMindSettings {
   apiKeySalt?: string;
   privacyMode: "strict" | "balanced";
   costControl: CostControlConfig;
+  rewrite: RewriteConfig;
 }
 
 export interface AskRequest {

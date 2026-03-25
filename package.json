@@ -16,9 +16,11 @@
   },
   "devDependencies": {
     "@types/chrome": "^0.0.314",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.15.28",
     "esbuild": "^0.25.4",
     "fake-indexeddb": "^6.2.4",
+    "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4",
     "zod": "^3.25.7"
