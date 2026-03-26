@@ -33,6 +33,19 @@ const defaultIntentInput = document.querySelector<HTMLSelectElement>("#defaultIn
 const saveSiteIntentBtn = document.querySelector<HTMLButtonElement>("#saveSiteIntentBtn");
 const clearSiteIntentBtn = document.querySelector<HTMLButtonElement>("#clearSiteIntentBtn");
 const siteIntentStatus = document.querySelector<HTMLElement>("#siteIntentStatus");
+const billingSummary = document.querySelector<HTMLElement>("#billingSummary");
+const billingStatus = document.querySelector<HTMLElement>("#billingStatus");
+const billingAudit = document.querySelector<HTMLElement>("#billingAudit");
+const subscriptionTokenInput = document.querySelector<HTMLInputElement>("#subscriptionTokenInput");
+const refreshBillingBtn = document.querySelector<HTMLButtonElement>("#refreshBillingBtn");
+const verifySubscriptionBtn = document.querySelector<HTMLButtonElement>("#verifySubscriptionBtn");
+const topupCallsInput = document.querySelector<HTMLInputElement>("#topupCallsInput");
+const topupOrderIdInput = document.querySelector<HTMLInputElement>("#topupOrderIdInput");
+const buyTopupBtn = document.querySelector<HTMLButtonElement>("#buyTopupBtn");
+const cancelSubscriptionBtn = document.querySelector<HTMLButtonElement>("#cancelSubscriptionBtn");
+const refundSubscriptionBtn = document.querySelector<HTMLButtonElement>("#refundSubscriptionBtn");
+const refundIdInput = document.querySelector<HTMLInputElement>("#refundIdInput");
+const purchaseLink = document.querySelector<HTMLAnchorElement>("#purchaseLink");
 
 const INTENT_LABELS: Record<RewriteIntent, string> = {
   learning: "学习模式",
@@ -55,6 +68,26 @@ interface QaStreamMessage {
     error?: string;
     sources?: GraphQaEvidenceSource[];
   };
+}
+
+interface BillingView {
+  plan: "free" | "subscription";
+  subscriptionStatus: "inactive" | "active" | "canceled" | "refunded";
+  monthlyLimit: number;
+  monthlyUsed: number;
+  monthlyRemaining: number;
+  overagePackRemaining: number;
+  cancelAtPeriodEnd: boolean;
+  riskBlocked: boolean;
+  riskReason: string | null;
+  currentPeriodMonth: string;
+  purchaseUrl: string;
+  latestAuditLogs: Array<{
+    id: string;
+    action: string;
+    at: number;
+    message: string;
+  }>;
 }
 
 function ensureElement<T>(element: T | null, name: string): T {
@@ -357,6 +390,83 @@ function parseIntInput(input: HTMLInputElement, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+function renderBillingState(state: BillingView): void {
+  const summary = ensureElement(billingSummary, "billingSummary");
+  const audit = ensureElement(billingAudit, "billingAudit");
+  const link = ensureElement(purchaseLink, "purchaseLink");
+  summary.textContent =
+    `计划：${state.plan} / 订阅状态：${state.subscriptionStatus} / 月度用量：${state.monthlyUsed}/${state.monthlyLimit} / 增量包剩余：${state.overagePackRemaining}`;
+  const riskText = state.riskBlocked ? `是（${state.riskReason ?? "未知原因"}）` : "否";
+  ensureElement(billingStatus, "billingStatus").textContent =
+    `结算月：${state.currentPeriodMonth}；取消续费：${state.cancelAtPeriodEnd ? "是" : "否"}；风控拦截：${riskText}`;
+  link.href = state.purchaseUrl;
+  link.textContent = state.purchaseUrl;
+  audit.textContent =
+    state.latestAuditLogs.length === 0
+      ? "暂无审计日志"
+      : state.latestAuditLogs
+          .map((item) => `${new Date(item.at).toLocaleString()} [${item.action}] ${item.message}`)
+          .join("\n");
+}
+
+async function refreshBillingState(): Promise<void> {
+  const state = await sendToBackground<BillingView>({
+    type: "NEXUSMIND_BILLING_STATUS"
+  });
+  renderBillingState(state);
+}
+
+async function onVerifySubscription(): Promise<void> {
+  const token = ensureElement(subscriptionTokenInput, "subscriptionTokenInput").value.trim();
+  if (!token) {
+    throw new Error("请输入订阅校验 Token");
+  }
+  const state = await sendToBackground<BillingView>({
+    type: "NEXUSMIND_SUBSCRIPTION_VERIFY",
+    payload: { token }
+  });
+  renderBillingState(state);
+  ensureElement(billingStatus, "billingStatus").textContent = "订阅校验成功，已激活 500 次月额度";
+}
+
+async function onBuyTopup(): Promise<void> {
+  const orderId = ensureElement(topupOrderIdInput, "topupOrderIdInput").value.trim();
+  const packCalls = parseIntInput(ensureElement(topupCallsInput, "topupCallsInput"), 100);
+  if (!orderId) {
+    throw new Error("请输入增量包订单号");
+  }
+  const state = await sendToBackground<BillingView>({
+    type: "NEXUSMIND_BILLING_BUY_TOPUP",
+    payload: {
+      orderId,
+      packCalls
+    }
+  });
+  renderBillingState(state);
+  ensureElement(billingStatus, "billingStatus").textContent = "增量包购买成功";
+}
+
+async function onCancelSubscription(): Promise<void> {
+  const state = await sendToBackground<BillingView>({
+    type: "NEXUSMIND_BILLING_CANCEL"
+  });
+  renderBillingState(state);
+  ensureElement(billingStatus, "billingStatus").textContent = "已提交取消续费请求";
+}
+
+async function onRefundSubscription(): Promise<void> {
+  const refundId = ensureElement(refundIdInput, "refundIdInput").value.trim();
+  if (!refundId) {
+    throw new Error("请输入退款单号");
+  }
+  const state = await sendToBackground<BillingView>({
+    type: "NEXUSMIND_BILLING_REFUND",
+    payload: { refundId }
+  });
+  renderBillingState(state);
+  ensureElement(billingStatus, "billingStatus").textContent = "退款处理完成，订阅权益已回收";
+}
+
 async function onSaveSettings(): Promise<void> {
   const provider = ensureElement(providerInput, "providerInput").value as "openai" | "claude" | "gemini";
   const model = ensureElement(modelInput, "modelInput").value.trim();
@@ -541,6 +651,42 @@ ensureElement(clearSiteIntentBtn, "clearSiteIntentBtn").addEventListener("click"
   });
 });
 
+ensureElement(refreshBillingBtn, "refreshBillingBtn").addEventListener("click", () => {
+  refreshBillingState().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "刷新订阅状态失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(verifySubscriptionBtn, "verifySubscriptionBtn").addEventListener("click", () => {
+  onVerifySubscription().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "订阅校验失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(buyTopupBtn, "buyTopupBtn").addEventListener("click", () => {
+  onBuyTopup().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "增量包购买失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(cancelSubscriptionBtn, "cancelSubscriptionBtn").addEventListener("click", () => {
+  onCancelSubscription().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "取消订阅失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(refundSubscriptionBtn, "refundSubscriptionBtn").addEventListener("click", () => {
+  onRefundSubscription().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "退款处理失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
 loadSettings().catch(() => undefined);
 refreshGraphStats().catch(() => undefined);
+refreshBillingState().catch(() => undefined);
 updateAskUiState("idle");

@@ -56,6 +56,35 @@
       </section>
 
       <section class="panel">
+        <h2>商业化（Phase 5）</h2>
+        <p id="billingSummary"></p>
+        <label>订阅校验 Token
+          <input id="subscriptionTokenInput" placeholder="nm_sub_xxx" />
+        </label>
+        <div class="row">
+          <button id="refreshBillingBtn" class="secondary-btn">刷新订阅状态</button>
+          <button id="verifySubscriptionBtn">校验并激活订阅</button>
+        </div>
+        <label>增量包次数
+          <input id="topupCallsInput" type="number" value="100" />
+        </label>
+        <label>增量包订单号
+          <input id="topupOrderIdInput" placeholder="order_001" />
+        </label>
+        <button id="buyTopupBtn">购买增量包</button>
+        <div class="row">
+          <button id="cancelSubscriptionBtn" class="secondary-btn">申请取消订阅</button>
+          <button id="refundSubscriptionBtn" class="secondary-btn">申请退款</button>
+        </div>
+        <label>退款单号
+          <input id="refundIdInput" placeholder="refund_001" />
+        </label>
+        <a id="purchaseLink" target="_blank" rel="noopener noreferrer">超额后购买入口</a>
+        <pre id="billingAudit"></pre>
+        <p id="billingStatus"></p>
+      </section>
+
+      <section class="panel">
         <h2>基础设置</h2>
         <label>Provider
           <select id="providerInput">

@@ -75,10 +75,18 @@ button:disabled {
 #graphStatus,
 #graphStats,
 #rewriteStatus,
-#siteIntentStatus {
+#siteIntentStatus,
+#billingSummary,
+#billingStatus {
   margin: 4px 0;
   font-size: 12px;
   color: #334155;
+}
+
+#purchaseLink {
+  display: inline-block;
+  margin: 6px 0;
+  font-size: 12px;
 }
 
 .graph-canvas {

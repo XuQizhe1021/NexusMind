@@ -54,6 +54,31 @@ export type BackgroundMessage =
     }
   | {
       type: "NEXUSMIND_REWRITE_STATUS";
+    }
+  | {
+      type: "NEXUSMIND_BILLING_STATUS";
+    }
+  | {
+      type: "NEXUSMIND_SUBSCRIPTION_VERIFY";
+      payload: {
+        token: string;
+      };
+    }
+  | {
+      type: "NEXUSMIND_BILLING_BUY_TOPUP";
+      payload: {
+        orderId: string;
+        packCalls: number;
+      };
+    }
+  | {
+      type: "NEXUSMIND_BILLING_CANCEL";
+    }
+  | {
+      type: "NEXUSMIND_BILLING_REFUND";
+      payload: {
+        refundId: string;
+      };
     };
 
 export type BackgroundResponse =

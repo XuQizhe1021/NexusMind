@@ -1,12 +1,36 @@
 import { OpenAiChatClient } from "@nexusmind/ai/provider";
+import {
+  checkInvokeAccess,
+  consumeInvokeQuota,
+  createInitialBillingState,
+  parseBillingState,
+  processRefund,
+  purchaseOveragePack,
+  requestCancelSubscription,
+  verifySubscriptionToken
+} from "@nexusmind/billing";
+import type { BillingState } from "@nexusmind/billing";
 import { decryptApiKey, encryptApiKey, parseSettings, saveSettingsPayloadSchema } from "@nexusmind/core";
 import type { NexusMindSettings } from "@nexusmind/core";
 import type { GraphQaEvidenceSource } from "@nexusmind/graph";
 import { NexusMindGraphService } from "@nexusmind/graph";
+import { z } from "zod";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const SETTINGS_KEY = "nexusmind_settings";
+const BILLING_KEY = "nexusmind_billing_state";
 const graphService = new NexusMindGraphService();
+
+const subscriptionVerifyPayloadSchema = z.object({
+  token: z.string().min(1).max(200)
+});
+const topupPayloadSchema = z.object({
+  orderId: z.string().min(1).max(120),
+  packCalls: z.number().int().positive().max(100000)
+});
+const refundPayloadSchema = z.object({
+  refundId: z.string().min(1).max(120)
+});
 
 interface GraphAskStartMessage {
   type: "NEXUSMIND_GRAPH_ASK_START";
@@ -76,9 +100,75 @@ async function saveSettings(message: Extract<BackgroundMessage, { type: "NEXUSMI
   await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
 }
 
+async function getStoredBillingState(): Promise<BillingState> {
+  const result = await chrome.storage.local.get(BILLING_KEY);
+  return parseBillingState(result[BILLING_KEY]);
+}
+
+async function saveBillingState(state: BillingState): Promise<void> {
+  await chrome.storage.local.set({ [BILLING_KEY]: state });
+}
+
+function toBillingResponse(state: BillingState): {
+  plan: BillingState["plan"];
+  subscriptionStatus: BillingState["subscriptionStatus"];
+  monthlyLimit: number;
+  monthlyUsed: number;
+  monthlyRemaining: number;
+  overagePackRemaining: number;
+  cancelAtPeriodEnd: boolean;
+  riskBlocked: boolean;
+  riskReason: string | null;
+  currentPeriodMonth: string;
+  purchaseUrl: string;
+  latestAuditLogs: BillingState["auditLogs"];
+} {
+  return {
+    plan: state.plan,
+    subscriptionStatus: state.subscriptionStatus,
+    monthlyLimit: state.monthlyLimit,
+    monthlyUsed: state.monthlyUsed,
+    monthlyRemaining: Math.max(state.monthlyLimit - state.monthlyUsed, 0),
+    overagePackRemaining: state.overagePackRemaining,
+    cancelAtPeriodEnd: state.cancelAtPeriodEnd,
+    riskBlocked: state.risk.blocked,
+    riskReason: state.risk.reason,
+    currentPeriodMonth: state.currentPeriodMonth,
+    purchaseUrl: "https://nexusmind.app/billing/topup",
+    latestAuditLogs: state.auditLogs.slice(-10)
+  };
+}
+
+async function getOrCreateBillingState(): Promise<BillingState> {
+  const state = await getStoredBillingState();
+  if (state.auditLogs.length === 0 && state.currentPeriodMonth === createInitialBillingState().currentPeriodMonth) {
+    return state;
+  }
+  return state;
+}
+
+async function verifyInvokePermission(): Promise<void> {
+  const state = await getOrCreateBillingState();
+  // 所有问答入口统一先做权限门控，保证免费/订阅双轨行为一致，避免漏校验。
+  const checked = checkInvokeAccess(state);
+  await saveBillingState(checked.state);
+  if (!checked.decision.allowed) {
+    const buyHint = checked.decision.requiresTopUp ? " 你可在“商业化（Phase 5）”中购买增量包。" : "";
+    throw new Error(`${checked.decision.reason}${buyHint}`);
+  }
+}
+
+async function consumeInvokeUsage(): Promise<void> {
+  const state = await getOrCreateBillingState();
+  // 计量在“会话成功后”再扣减，避免用户中断或请求失败时被误计费。
+  const consumed = consumeInvokeQuota(state);
+  await saveBillingState(consumed);
+}
+
 async function askCurrentPage(
   message: Extract<BackgroundMessage, { type: "NEXUSMIND_ASK" }>
 ): Promise<string> {
+  await verifyInvokePermission();
   // 先在后台读取并解密密钥，避免 UI 层接触明文，减少泄露面。
   const settings = await getStoredSettings();
   if (!settings.encryptedApiKey || !settings.apiKeyIv || !settings.apiKeySalt) {
@@ -98,10 +188,12 @@ async function askCurrentPage(
 
   const client = new OpenAiChatClient(apiKey, settings.model);
   // Phase 1 先限制输入长度，避免单次请求超限导致失败。
-  return client.answer({
+  const answer = await client.answer({
     question: message.payload.question,
     pageText: message.payload.pageText.slice(0, 30000)
   });
+  await consumeInvokeUsage();
+  return answer;
 }
 
 async function createOpenAiClient(): Promise<OpenAiChatClient> {
@@ -194,6 +286,37 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
         await graphService.clearAll();
         return { ok: true, data: { cleared: true } };
       }
+      if (message.type === "NEXUSMIND_BILLING_STATUS") {
+        const state = await getOrCreateBillingState();
+        return { ok: true, data: toBillingResponse(state) };
+      }
+      if (message.type === "NEXUSMIND_SUBSCRIPTION_VERIFY") {
+        const state = await getOrCreateBillingState();
+        const payload = subscriptionVerifyPayloadSchema.parse(message.payload);
+        const verified = verifySubscriptionToken(state, payload.token.trim());
+        await saveBillingState(verified);
+        return { ok: true, data: toBillingResponse(verified) };
+      }
+      if (message.type === "NEXUSMIND_BILLING_BUY_TOPUP") {
+        const state = await getOrCreateBillingState();
+        const payload = topupPayloadSchema.parse(message.payload);
+        const updated = purchaseOveragePack(state, payload.packCalls, payload.orderId.trim());
+        await saveBillingState(updated);
+        return { ok: true, data: toBillingResponse(updated) };
+      }
+      if (message.type === "NEXUSMIND_BILLING_CANCEL") {
+        const state = await getOrCreateBillingState();
+        const updated = requestCancelSubscription(state);
+        await saveBillingState(updated);
+        return { ok: true, data: toBillingResponse(updated) };
+      }
+      if (message.type === "NEXUSMIND_BILLING_REFUND") {
+        const state = await getOrCreateBillingState();
+        const payload = refundPayloadSchema.parse(message.payload);
+        const updated = processRefund(state, payload.refundId.trim());
+        await saveBillingState(updated);
+        return { ok: true, data: toBillingResponse(updated) };
+      }
       return { ok: false, error: "不支持的消息类型" };
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "未知错误";
@@ -229,47 +352,61 @@ chrome.runtime.onConnect.addListener((port) => {
     runningRequests.get(requestId)?.abort();
     const controller = new AbortController();
     runningRequests.set(requestId, controller);
-    runGraphAsk({
-      question: message.payload.question,
-      pageText: message.payload.pageText,
-      signal: controller.signal,
-      onDelta: (chunk) => {
-        port.postMessage({
-          type: "NEXUSMIND_GRAPH_ASK_DELTA",
-          payload: { requestId, chunk }
-        });
-      }
-    })
-      .then((result) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        port.postMessage({
-          type: "NEXUSMIND_GRAPH_ASK_COMPLETE",
-          payload: {
-            requestId,
-            answer: result.answer,
-            sources: result.sources
-          }
-        });
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
-          port.postMessage({
-            type: "NEXUSMIND_GRAPH_ASK_CANCELLED",
-            payload: { requestId }
-          });
-          return;
-        }
-        const messageText = error instanceof Error ? error.message : "图谱问答失败";
+    void (async () => {
+      try {
+        await verifyInvokePermission();
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "权限校验失败";
+        runningRequests.delete(requestId);
         port.postMessage({
           type: "NEXUSMIND_GRAPH_ASK_ERROR",
           payload: { requestId, error: messageText }
         });
+        return;
+      }
+      runGraphAsk({
+        question: message.payload.question,
+        pageText: message.payload.pageText,
+        signal: controller.signal,
+        onDelta: (chunk) => {
+          port.postMessage({
+            type: "NEXUSMIND_GRAPH_ASK_DELTA",
+            payload: { requestId, chunk }
+          });
+        }
       })
-      .finally(() => {
-        runningRequests.delete(requestId);
-      });
+        .then(async (result) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+          await consumeInvokeUsage();
+          port.postMessage({
+            type: "NEXUSMIND_GRAPH_ASK_COMPLETE",
+            payload: {
+              requestId,
+              answer: result.answer,
+              sources: result.sources
+            }
+          });
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+            port.postMessage({
+              type: "NEXUSMIND_GRAPH_ASK_CANCELLED",
+              payload: { requestId }
+            });
+            return;
+          }
+          const messageText = error instanceof Error ? error.message : "图谱问答失败";
+          port.postMessage({
+            type: "NEXUSMIND_GRAPH_ASK_ERROR",
+            payload: { requestId, error: messageText }
+          });
+        })
+        .finally(() => {
+          runningRequests.delete(requestId);
+        });
+    })();
   });
   port.onDisconnect.addListener(() => {
     for (const controller of runningRequests.values()) {

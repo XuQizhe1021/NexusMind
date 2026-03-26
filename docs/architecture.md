@@ -17,9 +17,11 @@
   - 实体/关系抽取与跨页归一
   - 图谱检索、一跳关系回溯、问答证据集构建
 - `packages/billing`
-  - 配额判断占位（Phase 5 扩展）
+  - 订阅状态机（free/subscription、active/canceled/refunded）
+  - 调用门控、月度 500 次计量、增量包扣减
+  - 取消/退款处理与风控审计日志
 
-## 2. 关键数据流（Phase 1-4）
+## 2. 关键数据流（Phase 1-5）
 
 1. 用户在侧边栏点击“提问”
 2. sidepanel 调用 content script 获取当前页文本
@@ -40,10 +42,12 @@
 
 15. 用户点击“跨页图谱问答”
 16. sidepanel 建立长连接并发送 `NEXUSMIND_GRAPH_ASK_START`
-17. background 调用图谱证据构建（实体/关系/页面片段）并触发 AI 流式生成
-18. background 按增量分片回传 `NEXUSMIND_GRAPH_ASK_DELTA`
-19. 生成完成后回传 `NEXUSMIND_GRAPH_ASK_COMPLETE`（答案 + 来源）
-20. sidepanel 渲染 `[Sx]` 引用并可发送 `NEXUSMIND_HIGHLIGHT_TEXT` 到 content 进行正文定位
+17. background 先调用 `@nexusmind/billing` 执行订阅校验与权限门控
+18. 门控通过后，background 调用图谱证据构建并触发 AI 流式生成
+19. background 按增量分片回传 `NEXUSMIND_GRAPH_ASK_DELTA`
+20. 会话完成后，background 执行调用计量并回传 `NEXUSMIND_GRAPH_ASK_COMPLETE`（答案 + 来源）
+21. sidepanel 渲染 `[Sx]` 引用并可发送 `NEXUSMIND_HIGHLIGHT_TEXT` 到 content 进行正文定位
+22. 若月度 500 次耗尽，background 返回超额提示并引导进入增量包购买入口
 
 ## 3. 分层边界
 
@@ -53,6 +57,8 @@
 - 配置结构统一通过 Schema 校验与默认值兜底
 - 页面重写能力仅在 content 层操作 DOM，sidepanel 不直接触碰页面结构
 - 流式问答采用 requestId + AbortController 控制并发与中断，避免跨请求串流污染
+- 计费状态仅在 background 层持久化与变更，UI 仅消费脱敏状态
+- 审计日志仅记录动作与结果，不记录 API Key、页面正文、模型响应原文
 
 ## 4. Phase 3 新增能力
 
@@ -61,6 +67,14 @@
 - DOM 可逆重排：支持“应用重写 / 手动还原 / 路由切换自动回滚”
 - 重写重入控制：同路由同意图幂等、并发重写忙碌保护
 
-## 5. 后续扩展路径
+## 5. Phase 5 新增能力
 
-- Phase 5：接入订阅鉴权、调用计数、超额购买入口
+- 订阅校验消息：`NEXUSMIND_SUBSCRIPTION_VERIFY`
+- 计费状态查询：`NEXUSMIND_BILLING_STATUS`
+- 增量包购买：`NEXUSMIND_BILLING_BUY_TOPUP`
+- 取消/退款流程：`NEXUSMIND_BILLING_CANCEL`、`NEXUSMIND_BILLING_REFUND`
+- 风控策略：一分钟内高频调用触发拦截并写入审计日志
+
+## 6. 后续扩展路径
+
+- Phase 6：接入监控看板、重连策略、跨浏览器回归自动化
