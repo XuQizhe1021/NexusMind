@@ -4,6 +4,8 @@ export type {
   GraphIngestInput,
   GraphIngestResult,
   GraphPage,
+  GraphQaEvidenceResult,
+  GraphQaEvidenceSource,
   GraphRelation,
   GraphSearchResult
 } from "./models";

@@ -3,23 +3,23 @@
 ## 1. 模块职责
 
 - `apps/extension`
-  - `background`：统一处理 AI 请求、图谱写入检索、设置存储、扩展命令与右键菜单
-  - `content`：提取当前页面可读文本，执行页面重写、回滚与 SPA 路由隔离
-  - `sidepanel`：用户交互入口（问答 + 图谱 + 页面重写 + 设置）
+  - `background`：统一处理 AI 请求、图谱写入检索、图谱问答流式编排、设置存储、扩展命令与右键菜单
+  - `content`：提取当前页面可读文本，执行页面重写、回滚与 SPA 路由隔离，处理答案片段高亮定位
+  - `sidepanel`：用户交互入口（流式问答 + 图谱 + 页面重写 + 设置）
 - `packages/core`
   - 领域类型定义
   - 对外配置 Schema 校验
   - API Key 加密与设置解析
 - `packages/ai`
-  - AI Provider 适配层（Phase 1 实现 OpenAI）
+  - AI Provider 适配层（OpenAI + 流式输出协议解析）
 - `packages/graph`
   - Dexie 图谱数据层（Entity / Relation / Page）
   - 实体/关系抽取与跨页归一
-  - 图谱检索与一跳关系回溯
+  - 图谱检索、一跳关系回溯、问答证据集构建
 - `packages/billing`
   - 配额判断占位（Phase 5 扩展）
 
-## 2. 关键数据流（Phase 1-2）
+## 2. 关键数据流（Phase 1-4）
 
 1. 用户在侧边栏点击“提问”
 2. sidepanel 调用 content script 获取当前页文本
@@ -38,6 +38,13 @@
 13. content 执行 DOM 重排，记录可逆变更集（隐藏/样式/移动/插入）
 14. 用户点击“一键还原”或 SPA 路由切换时，content 触发回滚并恢复页面
 
+15. 用户点击“跨页图谱问答”
+16. sidepanel 建立长连接并发送 `NEXUSMIND_GRAPH_ASK_START`
+17. background 调用图谱证据构建（实体/关系/页面片段）并触发 AI 流式生成
+18. background 按增量分片回传 `NEXUSMIND_GRAPH_ASK_DELTA`
+19. 生成完成后回传 `NEXUSMIND_GRAPH_ASK_COMPLETE`（答案 + 来源）
+20. sidepanel 渲染 `[Sx]` 引用并可发送 `NEXUSMIND_HIGHLIGHT_TEXT` 到 content 进行正文定位
+
 ## 3. 分层边界
 
 - UI 层不直接调用第三方 AI API
@@ -45,6 +52,7 @@
 - AI Provider 不感知浏览器 UI
 - 配置结构统一通过 Schema 校验与默认值兜底
 - 页面重写能力仅在 content 层操作 DOM，sidepanel 不直接触碰页面结构
+- 流式问答采用 requestId + AbortController 控制并发与中断，避免跨请求串流污染
 
 ## 4. Phase 3 新增能力
 
@@ -55,5 +63,4 @@
 
 ## 5. 后续扩展路径
 
-- Phase 4：引入流式问答与答案高亮联动
 - Phase 5：接入订阅鉴权、调用计数、超额购买入口

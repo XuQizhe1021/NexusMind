@@ -1,4 +1,5 @@
 import type { RewriteIntent } from "@nexusmind/core";
+import { PageSnippetHighlighter } from "./highlight";
 import { DomRewriteEngine } from "./rewrite-engine";
 
 function collectReadableText(): string {
@@ -7,6 +8,7 @@ function collectReadableText(): string {
 }
 
 const rewriteEngine = new DomRewriteEngine(document, window);
+const pageHighlighter = new PageSnippetHighlighter(document, window);
 
 let installedRouteHook = false;
 let installedRouteEventListener = false;
@@ -95,6 +97,19 @@ chrome.runtime.onMessage.addListener((message: { type: string; payload?: { inten
     sendResponse({
       ok: true,
       data: rewriteEngine.getStatus()
+    });
+    return true;
+  }
+  if (message.type === "NEXUSMIND_HIGHLIGHT_TEXT") {
+    const snippet = typeof (message.payload as { snippet?: string } | undefined)?.snippet === "string"
+      ? (message.payload as { snippet: string }).snippet
+      : "";
+    const located = pageHighlighter.locate(snippet);
+    sendResponse({
+      ok: true,
+      data: {
+        located
+      }
     });
     return true;
   }

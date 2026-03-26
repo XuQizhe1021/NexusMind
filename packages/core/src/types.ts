@@ -31,6 +31,12 @@ export interface NexusMindSettings {
 export interface AskRequest {
   question: string;
   pageText: string;
+  evidence?: Array<{
+    id: string;
+    title: string;
+    url: string;
+    snippet: string;
+  }>;
 }
 
 export interface AskResponse {

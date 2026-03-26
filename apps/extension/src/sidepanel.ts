@@ -1,11 +1,13 @@
 import { normalizeHostname, resolveRewriteIntent, upsertSiteIntentRule } from "@nexusmind/core";
 import type { NexusMindSettings, RewriteIntent } from "@nexusmind/core";
-import type { GraphSearchResult } from "@nexusmind/graph";
+import type { GraphQaEvidenceSource, GraphSearchResult } from "@nexusmind/graph";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const questionInput = document.querySelector<HTMLTextAreaElement>("#questionInput");
 const askBtn = document.querySelector<HTMLButtonElement>("#askBtn");
+const cancelAskBtn = document.querySelector<HTMLButtonElement>("#cancelAskBtn");
 const answerOutput = document.querySelector<HTMLElement>("#answerOutput");
+const answerSources = document.querySelector<HTMLElement>("#answerSources");
 
 const providerInput = document.querySelector<HTMLSelectElement>("#providerInput");
 const modelInput = document.querySelector<HTMLInputElement>("#modelInput");
@@ -39,6 +41,21 @@ const INTENT_LABELS: Record<RewriteIntent, string> = {
 };
 
 let currentSettings: NexusMindSettings | null = null;
+let qaPort: chrome.runtime.Port | null = null;
+let currentAskRequestId: string | null = null;
+let currentAnswerBuffer = "";
+let currentAnswerSources: GraphQaEvidenceSource[] = [];
+
+interface QaStreamMessage {
+  type: string;
+  payload?: {
+    requestId?: string;
+    chunk?: string;
+    answer?: string;
+    error?: string;
+    sources?: GraphQaEvidenceSource[];
+  };
+}
 
 function ensureElement<T>(element: T | null, name: string): T {
   if (!element) {
@@ -102,19 +119,176 @@ async function getCurrentTabUrl(): Promise<string> {
   return tab.url;
 }
 
+function buildRequestId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function renderAnswerContent(answer: string, sources: GraphQaEvidenceSource[]): void {
+  const output = ensureElement(answerOutput, "answerOutput");
+  output.innerHTML = "";
+  const citationPattern = /\[S(\d+)\]/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null = citationPattern.exec(answer);
+  while (match) {
+    const [fullText, indexText] = match;
+    const start = match.index;
+    if (start > cursor) {
+      output.append(document.createTextNode(answer.slice(cursor, start)));
+    }
+    const sourceIndex = Number(indexText) - 1;
+    const source = sources[sourceIndex];
+    if (source) {
+      const cite = document.createElement("button");
+      cite.type = "button";
+      cite.className = "source-inline-link";
+      cite.textContent = fullText;
+      cite.addEventListener("click", () => {
+        void locateSourceInPage(source);
+      });
+      output.append(cite);
+    } else {
+      output.append(document.createTextNode(fullText));
+    }
+    cursor = start + fullText.length;
+    match = citationPattern.exec(answer);
+  }
+  if (cursor < answer.length) {
+    output.append(document.createTextNode(answer.slice(cursor)));
+  }
+}
+
+function renderSourceList(sources: GraphQaEvidenceSource[]): void {
+  const container = ensureElement(answerSources, "answerSources");
+  container.innerHTML = "";
+  if (sources.length === 0) {
+    container.textContent = "";
+    return;
+  }
+  for (const [index, source] of sources.entries()) {
+    const card = document.createElement("article");
+    card.className = "source-item";
+    const title = document.createElement("h3");
+    title.textContent = `[S${index + 1}] ${source.title}`;
+    const snippet = document.createElement("p");
+    snippet.className = "source-snippet";
+    snippet.textContent = source.snippet;
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const locateBtn = document.createElement("button");
+    locateBtn.type = "button";
+    locateBtn.className = "secondary-btn";
+    locateBtn.textContent = "定位正文";
+    locateBtn.addEventListener("click", () => {
+      void locateSourceInPage(source);
+    });
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "secondary-btn";
+    openBtn.textContent = "打开来源";
+    openBtn.addEventListener("click", async () => {
+      await chrome.tabs.create({ url: source.url });
+    });
+    actions.append(locateBtn, openBtn);
+    card.append(title, snippet, actions);
+    container.append(card);
+  }
+}
+
+async function locateSourceInPage(source: GraphQaEvidenceSource): Promise<void> {
+  await sendToCurrentTab({
+    type: "NEXUSMIND_HIGHLIGHT_TEXT",
+    payload: {
+      snippet: source.snippet
+    }
+  });
+}
+
+function updateAskUiState(state: "idle" | "running"): void {
+  ensureElement(askBtn, "askBtn").disabled = state === "running";
+  ensureElement(cancelAskBtn, "cancelAskBtn").disabled = state !== "running";
+}
+
+function ensureQaPort(): chrome.runtime.Port {
+  if (qaPort) {
+    return qaPort;
+  }
+  qaPort = chrome.runtime.connect({ name: "nexusmind-qa-stream" });
+  qaPort.onMessage.addListener((message: QaStreamMessage) => {
+    const requestId = message.payload?.requestId;
+    if (!requestId || requestId !== currentAskRequestId) {
+      return;
+    }
+    if (message.type === "NEXUSMIND_GRAPH_ASK_DELTA") {
+      const chunk = message.payload?.chunk ?? "";
+      currentAnswerBuffer += chunk;
+      renderAnswerContent(currentAnswerBuffer, currentAnswerSources);
+      return;
+    }
+    if (message.type === "NEXUSMIND_GRAPH_ASK_COMPLETE") {
+      currentAnswerBuffer = message.payload?.answer ?? currentAnswerBuffer;
+      currentAnswerSources = message.payload?.sources ?? [];
+      renderAnswerContent(currentAnswerBuffer, currentAnswerSources);
+      renderSourceList(currentAnswerSources);
+      updateAskUiState("idle");
+      currentAskRequestId = null;
+      return;
+    }
+    if (message.type === "NEXUSMIND_GRAPH_ASK_CANCELLED") {
+      ensureElement(answerOutput, "answerOutput").textContent = "回答已中断";
+      renderSourceList([]);
+      updateAskUiState("idle");
+      currentAskRequestId = null;
+      return;
+    }
+    if (message.type === "NEXUSMIND_GRAPH_ASK_ERROR") {
+      const errorText = message.payload?.error ?? "图谱问答失败";
+      ensureElement(answerOutput, "answerOutput").textContent = `错误：${errorText}`;
+      renderSourceList([]);
+      updateAskUiState("idle");
+      currentAskRequestId = null;
+    }
+  });
+  qaPort.onDisconnect.addListener(() => {
+    qaPort = null;
+    updateAskUiState("idle");
+    currentAskRequestId = null;
+  });
+  return qaPort;
+}
+
 async function onAsk(): Promise<void> {
   const question = ensureElement(questionInput, "questionInput").value.trim();
   if (!question) {
     throw new Error("请输入问题");
   }
-  ensureElement(answerOutput, "answerOutput").textContent = "思考中...";
-
+  const port = ensureQaPort();
+  currentAskRequestId = buildRequestId();
+  currentAnswerBuffer = "";
+  currentAnswerSources = [];
+  ensureElement(answerOutput, "answerOutput").textContent = "正在检索图谱证据并生成答案...";
+  renderSourceList([]);
+  updateAskUiState("running");
   const pageText = await getCurrentPageText();
-  const data = await sendToBackground<{ answer: string }>({
-    type: "NEXUSMIND_ASK",
-    payload: { question, pageText }
+  port.postMessage({
+    type: "NEXUSMIND_GRAPH_ASK_START",
+    payload: {
+      requestId: currentAskRequestId,
+      question,
+      pageText
+    }
   });
-  ensureElement(answerOutput, "answerOutput").textContent = data.answer;
+}
+
+async function onCancelAsk(): Promise<void> {
+  if (!currentAskRequestId) {
+    return;
+  }
+  ensureQaPort().postMessage({
+    type: "NEXUSMIND_GRAPH_ASK_CANCEL",
+    payload: {
+      requestId: currentAskRequestId
+    }
+  });
 }
 
 function renderGraph(result: GraphSearchResult): void {
@@ -299,6 +473,15 @@ ensureElement(askBtn, "askBtn").addEventListener("click", () => {
   onAsk().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "提问失败";
     ensureElement(answerOutput, "answerOutput").textContent = `错误：${message}`;
+    updateAskUiState("idle");
+  });
+});
+
+ensureElement(cancelAskBtn, "cancelAskBtn").addEventListener("click", () => {
+  onCancelAsk().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "中断失败";
+    ensureElement(answerOutput, "answerOutput").textContent = `错误：${message}`;
+    updateAskUiState("idle");
   });
 });
 
@@ -360,3 +543,4 @@ ensureElement(clearSiteIntentBtn, "clearSiteIntentBtn").addEventListener("click"
 
 loadSettings().catch(() => undefined);
 refreshGraphStats().catch(() => undefined);
+updateAskUiState("idle");

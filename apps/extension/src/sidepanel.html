@@ -15,8 +15,12 @@
       <section class="panel">
         <h2>当前页 AI 问答</h2>
         <textarea id="questionInput" placeholder="请输入你想问的问题"></textarea>
-        <button id="askBtn">提问</button>
+        <div class="row">
+          <button id="askBtn">跨页图谱问答</button>
+          <button id="cancelAskBtn" class="secondary-btn">中断回答</button>
+        </div>
         <pre id="answerOutput"></pre>
+        <div id="answerSources" class="answer-sources"></div>
       </section>
 
       <section class="panel">

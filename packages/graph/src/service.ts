@@ -2,6 +2,8 @@ import { extractEntitiesAndRelations } from "./extractor";
 import { NexusMindGraphDb } from "./db";
 import type {
   GraphEntity,
+  GraphQaEvidenceResult,
+  GraphQaEvidenceSource,
   GraphIngestInput,
   GraphIngestResult,
   GraphPage,
@@ -18,6 +20,40 @@ function relationIdOf(sourceEntityId: string, targetEntityId: string): string {
   return sourceEntityId < targetEntityId
     ? `${sourceEntityId}|co_occurs|${targetEntityId}`
     : `${targetEntityId}|co_occurs|${sourceEntityId}`;
+}
+
+function normalizeSampleText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function extractQuestionTerms(question: string): string[] {
+  const normalized = question.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+  const terms = normalized.match(/[\u4e00-\u9fa5]{2,}|[a-z][a-z0-9_-]{1,}/g) ?? [];
+  return [...new Set(terms)].slice(0, 8);
+}
+
+function buildSnippet(sample: string, entityLabels: string[]): string {
+  const text = normalizeSampleText(sample);
+  if (!text) {
+    return "";
+  }
+  for (const label of entityLabels) {
+    const keyword = label.trim();
+    if (!keyword) {
+      continue;
+    }
+    const index = text.toLowerCase().indexOf(keyword.toLowerCase());
+    if (index < 0) {
+      continue;
+    }
+    const start = Math.max(0, index - 40);
+    const end = Math.min(text.length, index + keyword.length + 80);
+    return text.slice(start, end);
+  }
+  return text.slice(0, 120);
 }
 
 async function incrementEntityRef(db: NexusMindGraphDb, entityId: string, now: number): Promise<void> {
@@ -188,6 +224,7 @@ export class NexusMindGraphService {
         url: input.url,
         title: sanitizeLabel(input.title) || input.url,
         textLength: input.pageText.length,
+        contentSample: normalizeSampleText(input.pageText).slice(0, 8000),
         entityIds: [...new Set(entityIds)],
         relationIds: [...new Set(relationIds)],
         indexedAt: now,
@@ -246,5 +283,69 @@ export class NexusMindGraphService {
       this.db.pages.count()
     ]);
     return { entities, relations, pages };
+  }
+
+  async buildQaEvidence(question: string): Promise<GraphQaEvidenceResult> {
+    const terms = extractQuestionTerms(question);
+    const results = await Promise.all(
+      terms.map(async (term) => {
+        const searchResult = await this.search(term);
+        return searchResult;
+      })
+    );
+
+    const nodeMap = new Map<string, GraphEntity>();
+    const edgeMap = new Map<string, GraphRelation>();
+    for (const item of results) {
+      for (const node of item.nodes) {
+        nodeMap.set(node.id, node);
+      }
+      for (const edge of item.edges) {
+        edgeMap.set(edge.id, edge);
+      }
+    }
+
+    const entities = [...nodeMap.values()];
+    const edges = [...edgeMap.values()];
+    const matchedIds = new Set(entities.map((item) => item.id));
+    if (matchedIds.size === 0) {
+      return {
+        question,
+        entities: [],
+        edges: [],
+        sources: []
+      };
+    }
+
+    const pages = await this.db.pages
+      .filter((page) => page.entityIds.some((entityId) => matchedIds.has(entityId)))
+      .toArray();
+    const labelByEntityId = new Map(entities.map((item) => [item.id, item.label]));
+    const sourceItems: GraphQaEvidenceSource[] = pages
+      .map((page) => {
+        const matchedEntityIds = page.entityIds.filter((entityId) => matchedIds.has(entityId)).slice(0, 8);
+        const entityLabels = matchedEntityIds.map((entityId) => labelByEntityId.get(entityId) ?? "");
+        const snippet = buildSnippet(page.contentSample ?? "", entityLabels);
+        const relationMatchCount = page.relationIds.filter((relationId) => edgeMap.has(relationId)).length;
+        const score = matchedEntityIds.length * 3 + relationMatchCount * 2 + Math.min(20, page.textLength / 1500);
+        return {
+          id: page.id,
+          url: page.url,
+          title: page.title,
+          snippet,
+          matchedEntityIds,
+          score
+        };
+      })
+      .filter((item) => item.snippet.length > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 8);
+
+    return {
+      question,
+      entities,
+      edges,
+      sources: sourceItems
+    };
   }
 }

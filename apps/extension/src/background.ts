@@ -1,11 +1,30 @@
 import { OpenAiChatClient } from "@nexusmind/ai/provider";
 import { decryptApiKey, encryptApiKey, parseSettings, saveSettingsPayloadSchema } from "@nexusmind/core";
 import type { NexusMindSettings } from "@nexusmind/core";
+import type { GraphQaEvidenceSource } from "@nexusmind/graph";
 import { NexusMindGraphService } from "@nexusmind/graph";
 import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const SETTINGS_KEY = "nexusmind_settings";
 const graphService = new NexusMindGraphService();
+
+interface GraphAskStartMessage {
+  type: "NEXUSMIND_GRAPH_ASK_START";
+  payload: {
+    requestId: string;
+    question: string;
+    pageText: string;
+  };
+}
+
+interface GraphAskCancelMessage {
+  type: "NEXUSMIND_GRAPH_ASK_CANCEL";
+  payload: {
+    requestId: string;
+  };
+}
+
+type GraphAskPortMessage = GraphAskStartMessage | GraphAskCancelMessage;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.contextMenus.create({
@@ -85,6 +104,53 @@ async function askCurrentPage(
   });
 }
 
+async function createOpenAiClient(): Promise<OpenAiChatClient> {
+  const settings = await getStoredSettings();
+  if (!settings.encryptedApiKey || !settings.apiKeyIv || !settings.apiKeySalt) {
+    throw new Error("请先在设置中保存 API Key");
+  }
+  if (settings.provider !== "openai") {
+    throw new Error("Phase 4 当前仅支持 OpenAI Provider");
+  }
+  const apiKey = await decryptApiKey(
+    settings.encryptedApiKey,
+    settings.apiKeyIv,
+    settings.apiKeySalt,
+    chrome.runtime.id
+  );
+  return new OpenAiChatClient(apiKey, settings.model);
+}
+
+async function runGraphAsk(params: {
+  question: string;
+  pageText: string;
+  signal: AbortSignal;
+  onDelta: (chunk: string) => void;
+}): Promise<{ answer: string; sources: GraphQaEvidenceSource[] }> {
+  const evidence = await graphService.buildQaEvidence(params.question);
+  const client = await createOpenAiClient();
+  const answer = await client.streamAnswer(
+    {
+      question: params.question,
+      pageText: params.pageText.slice(0, 16000),
+      evidence: evidence.sources.map((item, index) => ({
+        id: `S${index + 1}`,
+        title: item.title,
+        url: item.url,
+        snippet: item.snippet
+      }))
+    },
+    {
+      signal: params.signal,
+      onDelta: params.onDelta
+    }
+  );
+  return {
+    answer,
+    sources: evidence.sources
+  };
+}
+
 async function indexPage(
   message: Extract<BackgroundMessage, { type: "NEXUSMIND_INDEX_PAGE" }>
 ): Promise<{ pageId: string; entityCount: number; relationCount: number }> {
@@ -143,4 +209,72 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
     });
 
   return true;
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "nexusmind-qa-stream") {
+    return;
+  }
+  const runningRequests = new Map<string, AbortController>();
+  port.onMessage.addListener((message: GraphAskPortMessage) => {
+    if (message.type === "NEXUSMIND_GRAPH_ASK_CANCEL") {
+      const controller = runningRequests.get(message.payload.requestId);
+      controller?.abort();
+      return;
+    }
+    if (message.type !== "NEXUSMIND_GRAPH_ASK_START") {
+      return;
+    }
+    const requestId = message.payload.requestId;
+    runningRequests.get(requestId)?.abort();
+    const controller = new AbortController();
+    runningRequests.set(requestId, controller);
+    runGraphAsk({
+      question: message.payload.question,
+      pageText: message.payload.pageText,
+      signal: controller.signal,
+      onDelta: (chunk) => {
+        port.postMessage({
+          type: "NEXUSMIND_GRAPH_ASK_DELTA",
+          payload: { requestId, chunk }
+        });
+      }
+    })
+      .then((result) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        port.postMessage({
+          type: "NEXUSMIND_GRAPH_ASK_COMPLETE",
+          payload: {
+            requestId,
+            answer: result.answer,
+            sources: result.sources
+          }
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+          port.postMessage({
+            type: "NEXUSMIND_GRAPH_ASK_CANCELLED",
+            payload: { requestId }
+          });
+          return;
+        }
+        const messageText = error instanceof Error ? error.message : "图谱问答失败";
+        port.postMessage({
+          type: "NEXUSMIND_GRAPH_ASK_ERROR",
+          payload: { requestId, error: messageText }
+        });
+      })
+      .finally(() => {
+        runningRequests.delete(requestId);
+      });
+  });
+  port.onDisconnect.addListener(() => {
+    for (const controller of runningRequests.values()) {
+      controller.abort();
+    }
+    runningRequests.clear();
+  });
 });

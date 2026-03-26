@@ -11,11 +11,15 @@
   },
   "include": [
     "**/*.ts",
-    "../apps/extension/src/rewrite-engine.ts"
+    "../apps/extension/src/rewrite-engine.ts",
+    "../apps/extension/src/highlight.ts"
   ],
   "references": [
     {
       "path": "../packages/core"
+    },
+    {
+      "path": "../packages/ai"
     },
     {
       "path": "../packages/billing"

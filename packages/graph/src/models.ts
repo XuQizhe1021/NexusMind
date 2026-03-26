@@ -25,6 +25,7 @@ export interface GraphPage {
   url: string;
   title: string;
   textLength: number;
+  contentSample?: string;
   entityIds: string[];
   relationIds: string[];
   indexedAt: number;
@@ -53,4 +54,20 @@ export interface GraphSearchResult {
   query: string;
   nodes: GraphEntity[];
   edges: GraphRelation[];
+}
+
+export interface GraphQaEvidenceSource {
+  id: string;
+  url: string;
+  title: string;
+  snippet: string;
+  matchedEntityIds: string[];
+  score: number;
+}
+
+export interface GraphQaEvidenceResult {
+  question: string;
+  entities: GraphEntity[];
+  edges: GraphRelation[];
+  sources: GraphQaEvidenceSource[];
 }

@@ -1,8 +1,25 @@
 # NexusMind 变更记录
 
-## Unreleased（Phase 3 页面重写）
+## Unreleased（Phase 4 高级问答）
 
 ### 新增
+
+- 图谱问答编排能力：
+  - 新增跨页证据构建（问题关键词 -> 实体/关系聚合 -> 来源页面片段）
+  - 后台新增“检索证据 -> 生成答案 -> 回链来源”统一链路
+- AI 流式通道升级：
+  - OpenAI Provider 新增 SSE 流式解析与增量输出
+  - sidepanel/background 间新增长连接问答通道
+  - 新增问答中断能力（AbortController + requestId 隔离）
+- 答案联动定位：
+  - 侧边栏支持 `[S1]` 引用点击与来源卡片定位
+  - content 新增正文片段高亮与滚动定位能力
+- 新增 Phase 4 测试：
+  - 图谱问答证据集成测试
+  - AI 流式与中断集成测试
+  - 正文高亮定位 E2E 测试
+
+### 变更
 
 - 扩展设置模型新增 `rewrite` 配置：
   - `defaultIntent`（全局默认意图）
