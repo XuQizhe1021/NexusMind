@@ -66,6 +66,12 @@ const AUDIT_LOG_LIMIT = 200;
 const CONSUMED_REQUEST_ID_LIMIT = 200;
 const RISK_DEGRADED_THRESHOLD = 12;
 const RISK_BLOCK_THRESHOLD = 20;
+const BILLING_TOKEN_ISSUER = "nexusmind-billing";
+const BILLING_TOKEN_AUDIENCE = "nexusmind-extension";
+const BILLING_SIGNING_PUBLIC_KEYS: Record<string, string> = {
+  "nm-prod-2026-03":
+    "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlR3005Eip9l7jfwHx1BV\nFa+RQGt+ku8h4aQ4z07Sp2Pgwd1TxyZ0nHaZSFT1vbt5AV/94qAQE/gnmNXaF1Fd\n0pJVWin77lLUO4grRjITph26TPxi2io2FIiNUChvWdUh2uLnzVWRiCPbynNF+62t\n4Fcp8osiCQPYMg9+AisTHoWiIRrNmoV4ZgFTDQjhEgCvC1FwJt/QN8UXJZkCANaS\nzmom+utG4sWv2cWUrXF2PgNPZzSEpCE4RVKeigUxxQHkmaZ/E3TtvKiHDKr9epC+\ngUQozD+IW6xzrtanI07mL8XUSp62bcSY66xjLGXhKUNzFLmLf3EXXUlFqM75Jl8r\nwQIDAQAB\n-----END PUBLIC KEY-----"
+};
 
 const billingStateSchema = z.object({
   plan: z.enum(["free", "subscription"]),
@@ -108,6 +114,23 @@ const billingStateSchema = z.object({
     .default([]),
   usageTimeline: z.array(z.number().int().nonnegative()).max(USAGE_TIMELINE_LIMIT).default([]),
   consumedRequestIds: z.array(z.string().min(1)).max(CONSUMED_REQUEST_ID_LIMIT).default([])
+});
+
+const subscriptionTokenHeaderSchema = z.object({
+  alg: z.literal("RS256"),
+  typ: z.string().optional(),
+  kid: z.string().min(1).max(120)
+});
+
+const subscriptionTokenPayloadSchema = z.object({
+  iss: z.literal(BILLING_TOKEN_ISSUER),
+  aud: z.literal(BILLING_TOKEN_AUDIENCE),
+  sub: z.string().min(1).max(120),
+  plan: z.literal("subscription"),
+  status: z.literal("active"),
+  exp: z.number().int().positive(),
+  iat: z.number().int().positive(),
+  whitelist: z.boolean().optional().default(false)
 });
 
 function buildMonthKey(timestamp: number): string {
@@ -195,14 +218,93 @@ export function canInvoke(quota: UsageQuota): boolean {
   return quota.monthlyUsed < quota.monthlyLimit;
 }
 
-export function verifySubscriptionToken(
+function decodeBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  const binary = atob(`${normalized}${padding}`);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function decodeJsonBase64Url<T>(value: string): T {
+  const bytes = decodeBase64Url(value);
+  const text = new TextDecoder().decode(bytes);
+  return JSON.parse(text) as T;
+}
+
+function pemToSpkiDer(pem: string): Uint8Array {
+  const body = pem
+    .replace("-----BEGIN PUBLIC KEY-----", "")
+    .replace("-----END PUBLIC KEY-----", "")
+    .replace(/\s+/g, "");
+  return decodeBase64Url(body);
+}
+
+function toArrayBuffer(value: Uint8Array): ArrayBuffer {
+  return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
+}
+
+async function verifySubscriptionSignature(params: {
+  headerPart: string;
+  payloadPart: string;
+  signaturePart: string;
+  keyId: string;
+}): Promise<boolean> {
+  const publicKeyPem = BILLING_SIGNING_PUBLIC_KEYS[params.keyId];
+  if (!publicKeyPem) {
+    throw new Error("订阅校验失败：签名密钥不存在");
+  }
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error("订阅校验失败：当前环境不支持签名验证");
+  }
+  const imported = await subtle.importKey(
+    "spki",
+    toArrayBuffer(pemToSpkiDer(publicKeyPem)),
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: "SHA-256"
+    },
+    false,
+    ["verify"]
+  );
+  const data = new TextEncoder().encode(`${params.headerPart}.${params.payloadPart}`);
+  const signature = decodeBase64Url(params.signaturePart);
+  return subtle.verify("RSASSA-PKCS1-v1_5", imported, toArrayBuffer(signature), toArrayBuffer(data));
+}
+
+export async function verifySubscriptionToken(
   state: BillingState,
   token: string,
   timestamp: number = Date.now()
-): BillingState {
+): Promise<BillingState> {
   const next = resetMonthlyUsageIfNeeded(state, timestamp);
-  if (!token.startsWith("nm_sub_")) {
-    throw new Error("订阅校验失败：Token 无效");
+  const [headerPart, payloadPart, signaturePart] = token.split(".");
+  if (!headerPart || !payloadPart || !signaturePart) {
+    throw new Error("订阅校验失败：Token 格式无效");
+  }
+  const header = subscriptionTokenHeaderSchema.parse(decodeJsonBase64Url<unknown>(headerPart));
+  const payload = subscriptionTokenPayloadSchema.parse(decodeJsonBase64Url<unknown>(payloadPart));
+  // 签名校验必须先于状态激活，确保前端无法通过伪造字段绕过订阅门控。
+  const verified = await verifySubscriptionSignature({
+    headerPart,
+    payloadPart,
+    signaturePart,
+    keyId: header.kid
+  });
+  if (!verified) {
+    throw new Error("订阅校验失败：签名无效");
+  }
+  const issuedAtMs = payload.iat * 1000;
+  const expiresAtMs = payload.exp * 1000;
+  if (issuedAtMs > timestamp + 10_000) {
+    throw new Error("订阅校验失败：Token 生效时间异常");
+  }
+  if (expiresAtMs <= timestamp) {
+    throw new Error("订阅校验失败：Token 已过期");
   }
   const updated: BillingState = {
     ...next,
@@ -214,7 +316,7 @@ export function verifySubscriptionToken(
       level: "none",
       reason: null,
       reviewRequired: false,
-      whitelist: token.startsWith("nm_sub_vip_")
+      whitelist: payload.whitelist
     }
   };
   return appendAuditLog(updated, {
@@ -223,7 +325,8 @@ export function verifySubscriptionToken(
     message: "订阅校验通过，已激活订阅权限",
     metadata: {
       plan: updated.plan,
-      status: updated.subscriptionStatus
+      status: updated.subscriptionStatus,
+      subject: payload.sub
     }
   });
 }

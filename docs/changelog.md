@@ -1,9 +1,20 @@
 # NexusMind 变更记录
 
-## Unreleased（Phase 6 稳定性）
+## Unreleased（Phase 7 发布能力）
 
 ### 新增
 
+- 发布门禁能力：
+  - 新增 `ci.yml` 基础质量门禁（typecheck/test/build）
+  - 新增 `browser-regression.yml` 扩展回归门禁（Chromium/Edge 矩阵）
+  - 新增扩展级跨浏览器自动化回归用例（扩展加载、文本提取、SPA 路由回滚）
+- 发布自动化能力：
+  - 新增 `npm run ci:gate` 一键门禁命令
+  - 新增 `scripts/release-gate.mjs` 并产出发布检查报告
+- 文档能力：
+  - 新增 `docs/phase7-plan.md`
+  - 新增 `docs/user-manual.md`
+  - 新增 `docs/developer-handbook.md`
 - 图谱问答编排能力：
   - 新增跨页证据构建（问题关键词 -> 实体/关系聚合 -> 来源页面片段）
   - 后台新增“检索证据 -> 生成答案 -> 回链来源”统一链路
@@ -34,6 +45,8 @@
 
 ### 变更
 
+- 订阅校验从本地 Token 前缀规则迁移为服务端签名 JWT（RS256）验证。
+- 商业化白名单逻辑从前缀判断迁移为签名声明字段 `whitelist`。
 - 扩展设置模型新增 `rewrite` 配置：
   - `defaultIntent`（全局默认意图）
   - `siteIntents`（站点级默认意图覆盖）

@@ -380,7 +380,7 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
       if (message.type === "NEXUSMIND_SUBSCRIPTION_VERIFY") {
         const state = await getOrCreateBillingState();
         const payload = subscriptionVerifyPayloadSchema.parse(message.payload);
-        const verified = verifySubscriptionToken(state, payload.token.trim());
+        const verified = await verifySubscriptionToken(state, payload.token.trim());
         await saveBillingState(verified);
         return { ok: true, data: toBillingResponse(verified) };
       }

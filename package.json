@@ -1,6 +1,6 @@
 {
   "name": "nexusmind",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "private": true,
   "description": "NexusMind monorepo",
   "workspaces": [
@@ -12,9 +12,12 @@
     "build": "npm run build -w @nexusmind/extension",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
+    "test:e2e:extension": "playwright test",
+    "ci:gate": "node ./scripts/release-gate.mjs",
     "lint": "npm run typecheck"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/chrome": "^0.0.314",
     "@types/jsdom": "^21.1.7",
     "@types/node": "^22.15.28",

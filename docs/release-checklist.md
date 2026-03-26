@@ -1,10 +1,19 @@
 # NexusMind 发布检查清单
 
+## 自动化执行入口（Phase 7）
+
+- 统一门禁命令：`npm run ci:gate`
+- 结果产物：`docs/release-artifacts/phase7-release-gate.json`
+- CI 工作流：
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/browser-regression.yml`
+
 ## 代码质量
 
 - [ ] `npm run typecheck` 通过
 - [ ] `npm test` 通过
 - [ ] `npm run build` 通过
+- [ ] `npm run test:e2e:extension` 通过（Chromium/Edge）
 
 ## 安全与隐私
 
@@ -23,8 +32,8 @@
 
 ## 兼容性
 
-- [ ] Chrome 加载验证
-- [ ] Edge 加载验证
+- [ ] Chrome 自动化回归通过（CI 矩阵）
+- [ ] Edge 自动化回归通过（CI 矩阵）
 - [ ] SPA 站点注入与问答链路验证
 - [ ] 按 `docs/phase6-regression-report.md` 固定回归集完成回归
 
@@ -40,4 +49,5 @@
 
 - [ ] README 更新
 - [ ] architecture/security/billing 文档同步
+- [ ] user-manual / developer-handbook 同步
 - [ ] changelog 更新

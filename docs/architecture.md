@@ -90,6 +90,14 @@
   - 建立固定 SPA 回归集（注入、问答、重写、路由回滚、引用定位）
   - 发布前执行 Chrome/Edge 手工回归并输出结果文档
 
-## 7. 后续扩展路径
+## 7. Phase 7 发布能力
 
-- Phase 7：发布文档完善、用户手册、上架清单与版本发布自动化
+- CI 门禁分层：
+  - `.github/workflows/ci.yml` 负责 typecheck/test/build 基础质量门禁
+  - `.github/workflows/browser-regression.yml` 负责 Chromium/Edge 扩展自动化回归
+- 订阅校验升级：
+  - 订阅激活由本地前缀规则升级为服务端签名 JWT（RS256）校验
+  - 校验通过后写入订阅状态机，并沿用既有门控/计量/风控链路
+- 发布自动化：
+  - `scripts/release-gate.mjs` 聚合执行类型检查、测试、构建、扩展回归
+  - 发布检查结果落盘至 `docs/release-artifacts/phase7-release-gate.json`
