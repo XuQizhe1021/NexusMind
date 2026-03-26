@@ -45,7 +45,11 @@ const buyTopupBtn = document.querySelector<HTMLButtonElement>("#buyTopupBtn");
 const cancelSubscriptionBtn = document.querySelector<HTMLButtonElement>("#cancelSubscriptionBtn");
 const refundSubscriptionBtn = document.querySelector<HTMLButtonElement>("#refundSubscriptionBtn");
 const refundIdInput = document.querySelector<HTMLInputElement>("#refundIdInput");
+const riskReviewNoteInput = document.querySelector<HTMLInputElement>("#riskReviewNoteInput");
+const riskReviewBtn = document.querySelector<HTMLButtonElement>("#riskReviewBtn");
 const purchaseLink = document.querySelector<HTMLAnchorElement>("#purchaseLink");
+const refreshStabilityBtn = document.querySelector<HTMLButtonElement>("#refreshStabilityBtn");
+const stabilityOutput = document.querySelector<HTMLElement>("#stabilityOutput");
 
 const INTENT_LABELS: Record<RewriteIntent, string> = {
   learning: "学习模式",
@@ -67,6 +71,8 @@ interface QaStreamMessage {
     answer?: string;
     error?: string;
     sources?: GraphQaEvidenceSource[];
+    attempt?: number;
+    maxAttempts?: number;
   };
 }
 
@@ -79,15 +85,42 @@ interface BillingView {
   overagePackRemaining: number;
   cancelAtPeriodEnd: boolean;
   riskBlocked: boolean;
+  riskLevel: "none" | "degraded" | "blocked";
   riskReason: string | null;
+  riskReviewRequired: boolean;
+  riskWhitelisted: boolean;
   currentPeriodMonth: string;
   purchaseUrl: string;
+  reviewUrl: string;
   latestAuditLogs: Array<{
     id: string;
     action: string;
     at: number;
     message: string;
   }>;
+}
+
+interface StabilityDashboard {
+  stream: {
+    total: number;
+    success: number;
+    failed: number;
+    retried: number;
+    reconnectRecovered: number;
+    lastError: string | null;
+    updatedAt: number;
+  };
+  billing: {
+    riskLevel: string;
+    riskBlocked: boolean;
+    reviewRequired: boolean;
+    whitelist: boolean;
+  };
+  gate: {
+    rewriteLatencyTargetMs: number;
+    graphSearchTargetNodes: number;
+  };
+  updatedAt: number;
 }
 
 function ensureElement<T>(element: T | null, name: string): T {
@@ -266,6 +299,15 @@ function ensureQaPort(): chrome.runtime.Port {
       currentAskRequestId = null;
       return;
     }
+    if (message.type === "NEXUSMIND_GRAPH_ASK_RETRYING") {
+      const attempt = message.payload?.attempt ?? 1;
+      const maxAttempts = message.payload?.maxAttempts ?? 2;
+      currentAnswerBuffer = "";
+      currentAnswerSources = [];
+      ensureElement(answerOutput, "answerOutput").textContent = `连接抖动，正在重连（${attempt}/${maxAttempts}）...`;
+      renderSourceList([]);
+      return;
+    }
     if (message.type === "NEXUSMIND_GRAPH_ASK_CANCELLED") {
       ensureElement(answerOutput, "answerOutput").textContent = "回答已中断";
       renderSourceList([]);
@@ -397,8 +439,10 @@ function renderBillingState(state: BillingView): void {
   summary.textContent =
     `计划：${state.plan} / 订阅状态：${state.subscriptionStatus} / 月度用量：${state.monthlyUsed}/${state.monthlyLimit} / 增量包剩余：${state.overagePackRemaining}`;
   const riskText = state.riskBlocked ? `是（${state.riskReason ?? "未知原因"}）` : "否";
+  const reviewText = state.riskReviewRequired ? `是（${state.reviewUrl}）` : "否";
+  const whitelistText = state.riskWhitelisted ? "是" : "否";
   ensureElement(billingStatus, "billingStatus").textContent =
-    `结算月：${state.currentPeriodMonth}；取消续费：${state.cancelAtPeriodEnd ? "是" : "否"}；风控拦截：${riskText}`;
+    `结算月：${state.currentPeriodMonth}；取消续费：${state.cancelAtPeriodEnd ? "是" : "否"}；风控级别：${state.riskLevel}；风控拦截：${riskText}；白名单：${whitelistText}；人工复核：${reviewText}`;
   link.href = state.purchaseUrl;
   link.textContent = state.purchaseUrl;
   audit.textContent =
@@ -465,6 +509,34 @@ async function onRefundSubscription(): Promise<void> {
   });
   renderBillingState(state);
   ensureElement(billingStatus, "billingStatus").textContent = "退款处理完成，订阅权益已回收";
+}
+
+async function onRequestRiskReview(): Promise<void> {
+  const note = ensureElement(riskReviewNoteInput, "riskReviewNoteInput").value.trim();
+  const state = await sendToBackground<BillingView & { reviewTicketId: string }>({
+    type: "NEXUSMIND_BILLING_RISK_REVIEW",
+    payload: { note }
+  });
+  renderBillingState(state);
+  ensureElement(billingStatus, "billingStatus").textContent = `已提交人工复核，工单号 ${state.reviewTicketId}`;
+}
+
+function renderStabilityDashboard(dashboard: StabilityDashboard): void {
+  ensureElement(stabilityOutput, "stabilityOutput").textContent = [
+    `更新时间：${new Date(dashboard.updatedAt).toLocaleString()}`,
+    `流式会话：总数 ${dashboard.stream.total} / 成功 ${dashboard.stream.success} / 失败 ${dashboard.stream.failed}`,
+    `重连：触发 ${dashboard.stream.retried} / 恢复 ${dashboard.stream.reconnectRecovered}`,
+    `最近错误：${dashboard.stream.lastError ?? "无"}`,
+    `风控态：level=${dashboard.billing.riskLevel} blocked=${dashboard.billing.riskBlocked ? "是" : "否"} review=${dashboard.billing.reviewRequired ? "是" : "否"} whitelist=${dashboard.billing.whitelist ? "是" : "否"}`,
+    `门禁目标：重写≤${dashboard.gate.rewriteLatencyTargetMs}ms；图谱规模=${dashboard.gate.graphSearchTargetNodes}节点`
+  ].join("\n");
+}
+
+async function refreshStabilityDashboard(): Promise<void> {
+  const dashboard = await sendToBackground<StabilityDashboard>({
+    type: "NEXUSMIND_STABILITY_DASHBOARD"
+  });
+  renderStabilityDashboard(dashboard);
 }
 
 async function onSaveSettings(): Promise<void> {
@@ -686,7 +758,22 @@ ensureElement(refundSubscriptionBtn, "refundSubscriptionBtn").addEventListener("
   });
 });
 
+ensureElement(riskReviewBtn, "riskReviewBtn").addEventListener("click", () => {
+  onRequestRiskReview().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "提交人工复核失败";
+    ensureElement(billingStatus, "billingStatus").textContent = `错误：${message}`;
+  });
+});
+
+ensureElement(refreshStabilityBtn, "refreshStabilityBtn").addEventListener("click", () => {
+  refreshStabilityDashboard().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "刷新稳定性看板失败";
+    ensureElement(stabilityOutput, "stabilityOutput").textContent = `错误：${message}`;
+  });
+});
+
 loadSettings().catch(() => undefined);
 refreshGraphStats().catch(() => undefined);
 refreshBillingState().catch(() => undefined);
+refreshStabilityDashboard().catch(() => undefined);
 updateAskUiState("idle");

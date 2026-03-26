@@ -79,9 +79,19 @@
         <label>退款单号
           <input id="refundIdInput" placeholder="refund_001" />
         </label>
+        <label>风控复核备注
+          <input id="riskReviewNoteInput" placeholder="请填写复核说明（可选）" />
+        </label>
+        <button id="riskReviewBtn" class="secondary-btn">提交人工复核</button>
         <a id="purchaseLink" target="_blank" rel="noopener noreferrer">超额后购买入口</a>
         <pre id="billingAudit"></pre>
         <p id="billingStatus"></p>
+      </section>
+
+      <section class="panel">
+        <h2>稳定性看板（Phase 6）</h2>
+        <button id="refreshStabilityBtn" class="secondary-btn">刷新稳定性看板</button>
+        <pre id="stabilityOutput"></pre>
       </section>
 
       <section class="panel">

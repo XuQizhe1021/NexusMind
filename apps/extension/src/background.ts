@@ -7,6 +7,7 @@ import {
   processRefund,
   purchaseOveragePack,
   requestCancelSubscription,
+  requestRiskManualReview,
   verifySubscriptionToken
 } from "@nexusmind/billing";
 import type { BillingState } from "@nexusmind/billing";
@@ -19,7 +20,25 @@ import type { BackgroundMessage, BackgroundResponse } from "./messages";
 
 const SETTINGS_KEY = "nexusmind_settings";
 const BILLING_KEY = "nexusmind_billing_state";
+const STREAM_MONITOR_KEY = "nexusmind_stream_monitor";
 const graphService = new NexusMindGraphService();
+const STREAM_RETRY_LIMIT = 2;
+
+const riskReviewPayloadSchema = z.object({
+  note: z.string().min(0).max(200)
+});
+
+const streamMonitorSchema = z.object({
+  total: z.number().int().nonnegative().default(0),
+  success: z.number().int().nonnegative().default(0),
+  failed: z.number().int().nonnegative().default(0),
+  retried: z.number().int().nonnegative().default(0),
+  reconnectRecovered: z.number().int().nonnegative().default(0),
+  lastError: z.string().max(300).nullable().default(null),
+  updatedAt: z.number().int().nonnegative().default(0)
+});
+
+type StreamMonitor = z.infer<typeof streamMonitorSchema>;
 
 const subscriptionVerifyPayloadSchema = z.object({
   token: z.string().min(1).max(200)
@@ -109,6 +128,28 @@ async function saveBillingState(state: BillingState): Promise<void> {
   await chrome.storage.local.set({ [BILLING_KEY]: state });
 }
 
+async function getStreamMonitor(): Promise<StreamMonitor> {
+  const result = await chrome.storage.local.get(STREAM_MONITOR_KEY);
+  const parsed = streamMonitorSchema.safeParse(result[STREAM_MONITOR_KEY]);
+  if (!parsed.success) {
+    return streamMonitorSchema.parse({});
+  }
+  return parsed.data;
+}
+
+async function saveStreamMonitor(state: StreamMonitor): Promise<void> {
+  await chrome.storage.local.set({ [STREAM_MONITOR_KEY]: state });
+}
+
+async function updateStreamMonitor(
+  updater: (state: StreamMonitor) => StreamMonitor
+): Promise<StreamMonitor> {
+  const current = await getStreamMonitor();
+  const next = updater(current);
+  await saveStreamMonitor(next);
+  return next;
+}
+
 function toBillingResponse(state: BillingState): {
   plan: BillingState["plan"];
   subscriptionStatus: BillingState["subscriptionStatus"];
@@ -118,9 +159,13 @@ function toBillingResponse(state: BillingState): {
   overagePackRemaining: number;
   cancelAtPeriodEnd: boolean;
   riskBlocked: boolean;
+  riskLevel: BillingState["risk"]["level"];
   riskReason: string | null;
+  riskReviewRequired: boolean;
+  riskWhitelisted: boolean;
   currentPeriodMonth: string;
   purchaseUrl: string;
+  reviewUrl: string;
   latestAuditLogs: BillingState["auditLogs"];
 } {
   return {
@@ -132,9 +177,13 @@ function toBillingResponse(state: BillingState): {
     overagePackRemaining: state.overagePackRemaining,
     cancelAtPeriodEnd: state.cancelAtPeriodEnd,
     riskBlocked: state.risk.blocked,
+    riskLevel: state.risk.level,
     riskReason: state.risk.reason,
+    riskReviewRequired: state.risk.reviewRequired,
+    riskWhitelisted: state.risk.whitelist,
     currentPeriodMonth: state.currentPeriodMonth,
     purchaseUrl: "https://nexusmind.app/billing/topup",
+    reviewUrl: "https://nexusmind.app/billing/risk-review",
     latestAuditLogs: state.auditLogs.slice(-10)
   };
 }
@@ -158,10 +207,10 @@ async function verifyInvokePermission(): Promise<void> {
   }
 }
 
-async function consumeInvokeUsage(): Promise<void> {
+async function consumeInvokeUsage(requestId: string): Promise<void> {
   const state = await getOrCreateBillingState();
   // 计量在“会话成功后”再扣减，避免用户中断或请求失败时被误计费。
-  const consumed = consumeInvokeQuota(state);
+  const consumed = consumeInvokeQuota(state, Date.now(), { requestId });
   await saveBillingState(consumed);
 }
 
@@ -192,7 +241,7 @@ async function askCurrentPage(
     question: message.payload.question,
     pageText: message.payload.pageText.slice(0, 30000)
   });
-  await consumeInvokeUsage();
+  await consumeInvokeUsage(`ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   return answer;
 }
 
@@ -243,6 +292,26 @@ async function runGraphAsk(params: {
   };
 }
 
+function isRetryableGraphAskError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return true;
+  }
+  if (error.name === "AbortError") {
+    return false;
+  }
+  const text = error.message.toLowerCase();
+  if (text.includes("api key") || text.includes("权限") || text.includes("token")) {
+    return false;
+  }
+  return true;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 async function indexPage(
   message: Extract<BackgroundMessage, { type: "NEXUSMIND_INDEX_PAGE" }>
 ): Promise<{ pageId: string; entityCount: number; relationCount: number }> {
@@ -252,6 +321,24 @@ async function indexPage(
     title: message.payload.title,
     pageText: message.payload.pageText.slice(0, 40000)
   });
+}
+
+async function buildStabilityDashboard() {
+  const [billingState, streamMonitor] = await Promise.all([getOrCreateBillingState(), getStreamMonitor()]);
+  return {
+    stream: streamMonitor,
+    billing: {
+      riskLevel: billingState.risk.level,
+      riskBlocked: billingState.risk.blocked,
+      reviewRequired: billingState.risk.reviewRequired,
+      whitelist: billingState.risk.whitelist
+    },
+    gate: {
+      rewriteLatencyTargetMs: 1000,
+      graphSearchTargetNodes: 2000
+    },
+    updatedAt: Date.now()
+  };
 }
 
 chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendResponse) => {
@@ -317,6 +404,17 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
         await saveBillingState(updated);
         return { ok: true, data: toBillingResponse(updated) };
       }
+      if (message.type === "NEXUSMIND_BILLING_RISK_REVIEW") {
+        const state = await getOrCreateBillingState();
+        const payload = riskReviewPayloadSchema.parse(message.payload);
+        const reviewed = requestRiskManualReview(state, payload.note);
+        await saveBillingState(reviewed.state);
+        return { ok: true, data: { ...toBillingResponse(reviewed.state), reviewTicketId: reviewed.ticketId } };
+      }
+      if (message.type === "NEXUSMIND_STABILITY_DASHBOARD") {
+        const dashboard = await buildStabilityDashboard();
+        return { ok: true, data: dashboard };
+      }
       return { ok: false, error: "不支持的消息类型" };
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "未知错误";
@@ -364,22 +462,42 @@ chrome.runtime.onConnect.addListener((port) => {
         });
         return;
       }
-      runGraphAsk({
-        question: message.payload.question,
-        pageText: message.payload.pageText,
-        signal: controller.signal,
-        onDelta: (chunk) => {
-          port.postMessage({
-            type: "NEXUSMIND_GRAPH_ASK_DELTA",
-            payload: { requestId, chunk }
-          });
-        }
-      })
-        .then(async (result) => {
-          if (controller.signal.aborted) {
-            return;
+      void updateStreamMonitor((monitor) => ({
+        ...monitor,
+        total: monitor.total + 1,
+        updatedAt: Date.now()
+      }));
+      let attempt = 0;
+      let answerSent = false;
+      while (attempt < STREAM_RETRY_LIMIT && !controller.signal.aborted) {
+        try {
+          if (attempt > 0) {
+            port.postMessage({
+              type: "NEXUSMIND_GRAPH_ASK_RETRYING",
+              payload: { requestId, attempt, maxAttempts: STREAM_RETRY_LIMIT }
+            });
+            await updateStreamMonitor((monitor) => ({
+              ...monitor,
+              retried: monitor.retried + 1,
+              updatedAt: Date.now()
+            }));
+            await sleep(500 * attempt);
           }
-          await consumeInvokeUsage();
+          const result = await runGraphAsk({
+            question: message.payload.question,
+            pageText: message.payload.pageText,
+            signal: controller.signal,
+            onDelta: (chunk) => {
+              port.postMessage({
+                type: "NEXUSMIND_GRAPH_ASK_DELTA",
+                payload: { requestId, chunk }
+              });
+            }
+          });
+          if (controller.signal.aborted) {
+            break;
+          }
+          await consumeInvokeUsage(requestId);
           port.postMessage({
             type: "NEXUSMIND_GRAPH_ASK_COMPLETE",
             payload: {
@@ -388,24 +506,49 @@ chrome.runtime.onConnect.addListener((port) => {
               sources: result.sources
             }
           });
-        })
-        .catch((error: unknown) => {
+          answerSent = true;
+          await updateStreamMonitor((monitor) => ({
+            ...monitor,
+            success: monitor.success + 1,
+            reconnectRecovered: attempt > 0 ? monitor.reconnectRecovered + 1 : monitor.reconnectRecovered,
+            updatedAt: Date.now()
+          }));
+          break;
+        } catch (error: unknown) {
           if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
             port.postMessage({
               type: "NEXUSMIND_GRAPH_ASK_CANCELLED",
               payload: { requestId }
             });
-            return;
+            break;
+          }
+          if (attempt < STREAM_RETRY_LIMIT - 1 && isRetryableGraphAskError(error)) {
+            attempt += 1;
+            continue;
           }
           const messageText = error instanceof Error ? error.message : "图谱问答失败";
+          await updateStreamMonitor((monitor) => ({
+            ...monitor,
+            failed: monitor.failed + 1,
+            lastError: messageText.slice(0, 300),
+            updatedAt: Date.now()
+          }));
           port.postMessage({
             type: "NEXUSMIND_GRAPH_ASK_ERROR",
             payload: { requestId, error: messageText }
           });
-        })
-        .finally(() => {
-          runningRequests.delete(requestId);
-        });
+          break;
+        }
+      }
+      if (!answerSent && !controller.signal.aborted && attempt >= STREAM_RETRY_LIMIT) {
+        await updateStreamMonitor((monitor) => ({
+          ...monitor,
+          failed: monitor.failed + 1,
+          lastError: "达到最大重连次数",
+          updatedAt: Date.now()
+        }));
+      }
+      runningRequests.delete(requestId);
     })();
   });
   port.onDisconnect.addListener(() => {

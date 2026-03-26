@@ -7,10 +7,13 @@ export type BillingAction =
   | "invoke_allowed"
   | "invoke_blocked"
   | "usage_consumed"
+  | "usage_deduplicated"
   | "topup_purchased"
   | "cancel_requested"
   | "refund_processed"
-  | "risk_blocked";
+  | "risk_degraded"
+  | "risk_blocked"
+  | "risk_review_requested";
 
 export interface UsageQuota {
   monthlyLimit: number;
@@ -27,7 +30,10 @@ export interface BillingAuditLog {
 
 export interface BillingRiskState {
   blocked: boolean;
+  level: "none" | "degraded" | "blocked";
   reason: string | null;
+  reviewRequired: boolean;
+  whitelist: boolean;
 }
 
 export interface BillingState {
@@ -41,6 +47,7 @@ export interface BillingState {
   risk: BillingRiskState;
   auditLogs: BillingAuditLog[];
   usageTimeline: number[];
+  consumedRequestIds: string[];
 }
 
 export interface AccessDecision {
@@ -49,11 +56,16 @@ export interface AccessDecision {
   monthlyRemaining: number;
   overagePackRemaining: number;
   requiresTopUp: boolean;
+  degraded: boolean;
+  manualReviewRequired: boolean;
 }
 
 export const MONTHLY_LIMIT_SUBSCRIPTION = 500;
 const USAGE_TIMELINE_LIMIT = 60;
 const AUDIT_LOG_LIMIT = 200;
+const CONSUMED_REQUEST_ID_LIMIT = 200;
+const RISK_DEGRADED_THRESHOLD = 12;
+const RISK_BLOCK_THRESHOLD = 20;
 
 const billingStateSchema = z.object({
   plan: z.enum(["free", "subscription"]),
@@ -65,7 +77,10 @@ const billingStateSchema = z.object({
   cancelAtPeriodEnd: z.boolean(),
   risk: z.object({
     blocked: z.boolean(),
-    reason: z.string().nullable()
+    level: z.enum(["none", "degraded", "blocked"]).default("none"),
+    reason: z.string().nullable(),
+    reviewRequired: z.boolean().default(false),
+    whitelist: z.boolean().default(false)
   }),
   auditLogs: z
     .array(
@@ -76,10 +91,13 @@ const billingStateSchema = z.object({
           "invoke_allowed",
           "invoke_blocked",
           "usage_consumed",
+          "usage_deduplicated",
           "topup_purchased",
           "cancel_requested",
           "refund_processed",
-          "risk_blocked"
+          "risk_degraded",
+          "risk_blocked",
+          "risk_review_requested"
         ]),
         at: z.number().int().nonnegative(),
         message: z.string().min(1),
@@ -88,7 +106,8 @@ const billingStateSchema = z.object({
     )
     .max(AUDIT_LOG_LIMIT)
     .default([]),
-  usageTimeline: z.array(z.number().int().nonnegative()).max(USAGE_TIMELINE_LIMIT).default([])
+  usageTimeline: z.array(z.number().int().nonnegative()).max(USAGE_TIMELINE_LIMIT).default([]),
+  consumedRequestIds: z.array(z.string().min(1)).max(CONSUMED_REQUEST_ID_LIMIT).default([])
 });
 
 function buildMonthKey(timestamp: number): string {
@@ -99,6 +118,10 @@ function buildMonthKey(timestamp: number): string {
 
 function buildAuditLogId(timestamp: number): string {
   return `${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildReviewTicketId(timestamp: number): string {
+  return `rvw_${timestamp}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
 function appendAuditLog(
@@ -133,7 +156,8 @@ function resetMonthlyUsageIfNeeded(state: BillingState, timestamp: number): Bill
     ...state,
     currentPeriodMonth: monthKey,
     monthlyUsed: 0,
-    usageTimeline: []
+    usageTimeline: [],
+    consumedRequestIds: []
   };
 }
 
@@ -148,10 +172,14 @@ export function createInitialBillingState(timestamp: number = Date.now()): Billi
     cancelAtPeriodEnd: false,
     risk: {
       blocked: false,
-      reason: null
+      level: "none",
+      reason: null,
+      reviewRequired: false,
+      whitelist: false
     },
     auditLogs: [],
-    usageTimeline: []
+    usageTimeline: [],
+    consumedRequestIds: []
   };
 }
 
@@ -183,7 +211,10 @@ export function verifySubscriptionToken(
     cancelAtPeriodEnd: false,
     risk: {
       blocked: false,
-      reason: null
+      level: "none",
+      reason: null,
+      reviewRequired: false,
+      whitelist: token.startsWith("nm_sub_vip_")
     }
   };
   return appendAuditLog(updated, {
@@ -220,7 +251,9 @@ export function checkInvokeAccess(
         reason: "账户已触发风控拦截，请稍后再试或联系支持",
         monthlyRemaining: Math.max(next.monthlyLimit - next.monthlyUsed, 0),
         overagePackRemaining: next.overagePackRemaining,
-        requiresTopUp: false
+        requiresTopUp: false,
+        degraded: false,
+        manualReviewRequired: next.risk.reviewRequired
       }
     };
   }
@@ -240,7 +273,9 @@ export function checkInvokeAccess(
         reason: "免费轨道（自备 Key）调用放行",
         monthlyRemaining: Number.POSITIVE_INFINITY,
         overagePackRemaining: 0,
-        requiresTopUp: false
+        requiresTopUp: false,
+        degraded: false,
+        manualReviewRequired: false
       }
     };
   }
@@ -260,10 +295,14 @@ export function checkInvokeAccess(
         reason: "订阅未激活，请先完成订阅校验",
         monthlyRemaining: Math.max(next.monthlyLimit - next.monthlyUsed, 0),
         overagePackRemaining: next.overagePackRemaining,
-        requiresTopUp: false
+        requiresTopUp: false,
+        degraded: false,
+        manualReviewRequired: false
       }
     };
   }
+  const degraded = next.risk.level === "degraded";
+  const reasonSuffix = degraded ? "（当前处于降级通道）" : "";
   if (next.monthlyUsed < next.monthlyLimit) {
     next = appendAuditLog(next, {
       action: "invoke_allowed",
@@ -278,10 +317,12 @@ export function checkInvokeAccess(
       state: next,
       decision: {
         allowed: true,
-        reason: "订阅额度内可调用",
+        reason: `订阅额度内可调用${reasonSuffix}`,
         monthlyRemaining: next.monthlyLimit - next.monthlyUsed,
         overagePackRemaining: next.overagePackRemaining,
-        requiresTopUp: false
+        requiresTopUp: false,
+        degraded,
+        manualReviewRequired: false
       }
     };
   }
@@ -298,10 +339,12 @@ export function checkInvokeAccess(
       state: next,
       decision: {
         allowed: true,
-        reason: "将使用增量包额度",
+        reason: `将使用增量包额度${reasonSuffix}`,
         monthlyRemaining: 0,
         overagePackRemaining: next.overagePackRemaining,
-        requiresTopUp: false
+        requiresTopUp: false,
+        degraded,
+        manualReviewRequired: false
       }
     };
   }
@@ -320,20 +363,39 @@ export function checkInvokeAccess(
       reason: "本月 500 次订阅额度已用尽，请购买增量包后继续",
       monthlyRemaining: 0,
       overagePackRemaining: 0,
-      requiresTopUp: true
+      requiresTopUp: true,
+      degraded: false,
+      manualReviewRequired: false
     }
   };
 }
 
 export function consumeInvokeQuota(
   state: BillingState,
-  timestamp: number = Date.now()
+  timestamp: number = Date.now(),
+  options?: {
+    requestId?: string;
+  }
 ): BillingState {
   let next = resetMonthlyUsageIfNeeded(state, timestamp);
+  const requestId = options?.requestId?.trim();
+  if (requestId && next.consumedRequestIds.includes(requestId)) {
+    return appendAuditLog(next, {
+      action: "usage_deduplicated",
+      at: timestamp,
+      message: "重复请求已去重，未重复扣减",
+      metadata: {
+        requestId
+      }
+    });
+  }
   const timeline = [...next.usageTimeline, timestamp].slice(-USAGE_TIMELINE_LIMIT);
   next = {
     ...next,
-    usageTimeline: timeline
+    usageTimeline: timeline,
+    consumedRequestIds: requestId
+      ? [...next.consumedRequestIds, requestId].slice(-CONSUMED_REQUEST_ID_LIMIT)
+      : next.consumedRequestIds
   };
   if (next.plan === "subscription" && next.subscriptionStatus === "active") {
     if (next.monthlyUsed < next.monthlyLimit) {
@@ -352,13 +414,16 @@ export function consumeInvokeQuota(
   }
   const oneMinuteAgo = timestamp - 60_000;
   const recentCalls = next.usageTimeline.filter((item) => item >= oneMinuteAgo).length;
-  if (recentCalls >= 20) {
+  if (!next.risk.whitelist && recentCalls >= RISK_BLOCK_THRESHOLD) {
     // 先采用本地轻量风控阈值兜底，避免异常高频调用持续放大成本。
     next = {
       ...next,
       risk: {
         blocked: true,
-        reason: "一分钟内调用次数异常"
+        level: "blocked",
+        reason: "一分钟内调用次数异常",
+        reviewRequired: true,
+        whitelist: false
       }
     };
     next = appendAuditLog(next, {
@@ -369,6 +434,36 @@ export function consumeInvokeQuota(
         recentCalls
       }
     });
+  } else if (!next.risk.whitelist && recentCalls >= RISK_DEGRADED_THRESHOLD) {
+    next = {
+      ...next,
+      risk: {
+        blocked: false,
+        level: "degraded",
+        reason: "一分钟内调用频率偏高，已进入降级通道",
+        reviewRequired: false,
+        whitelist: false
+      }
+    };
+    next = appendAuditLog(next, {
+      action: "risk_degraded",
+      at: timestamp,
+      message: "触发风控降级：一分钟内调用频率偏高",
+      metadata: {
+        recentCalls
+      }
+    });
+  } else if (!next.risk.blocked) {
+    next = {
+      ...next,
+      risk: {
+        blocked: false,
+        level: "none",
+        reason: null,
+        reviewRequired: false,
+        whitelist: next.risk.whitelist
+      }
+    };
   }
   return appendAuditLog(next, {
     action: "usage_consumed",
@@ -427,6 +522,35 @@ export function requestCancelSubscription(state: BillingState, timestamp: number
     at: timestamp,
     message: "已提交取消订阅请求，当前周期结束后生效"
   });
+}
+
+export function requestRiskManualReview(
+  state: BillingState,
+  note: string,
+  timestamp: number = Date.now()
+): { state: BillingState; ticketId: string } {
+  const ticketId = buildReviewTicketId(timestamp);
+  const normalized = note.trim().slice(0, 200);
+  const updated: BillingState = {
+    ...state,
+    risk: {
+      ...state.risk,
+      reviewRequired: true,
+      reason: state.risk.reason ?? "已提交人工复核"
+    }
+  };
+  return {
+    state: appendAuditLog(updated, {
+      action: "risk_review_requested",
+      at: timestamp,
+      message: "已提交人工复核请求",
+      metadata: {
+        ticketId,
+        note: normalized || "未填写备注"
+      }
+    }),
+    ticketId
+  };
 }
 
 export function processRefund(

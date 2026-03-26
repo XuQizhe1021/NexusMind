@@ -79,6 +79,15 @@ export type BackgroundMessage =
       payload: {
         refundId: string;
       };
+    }
+  | {
+      type: "NEXUSMIND_BILLING_RISK_REVIEW";
+      payload: {
+        note: string;
+      };
+    }
+  | {
+      type: "NEXUSMIND_STABILITY_DASHBOARD";
     };
 
 export type BackgroundResponse =
